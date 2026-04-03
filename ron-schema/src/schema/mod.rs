@@ -2,6 +2,9 @@
  * Author: Bradley Hunter
  */
 
+/// Schema parser — converts `.ronschema` source text into a [`Schema`] AST.
+pub mod parser;
+
 use std::collections::{HashMap, HashSet};
 
 use crate::Spanned;

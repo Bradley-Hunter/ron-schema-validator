@@ -15,7 +15,7 @@ pub mod diagnostic;
 // Re-exports — these are the public API
 pub use span::{Position, Span, Spanned};
 pub use schema::{Schema, StructDef, FieldDef, SchemaType, EnumDef};
-// pub use schema::parser::parse_schema;
+pub use schema::parser::parse_schema;
 pub use ron::{RonValue, RonStruct};
 // pub use ron::parser::parse_ron;
 // pub use validate::validate;
