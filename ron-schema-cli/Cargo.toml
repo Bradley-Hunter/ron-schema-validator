@@ -1,0 +1,18 @@
+[package]
+name = "ron-schema-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI tool for validating RON files against schemas"
+license = "MIT"
+
+[[bin]]
+name = "ron-schema"
+path = "src/main.rs"
+
+[dependencies]
+ron-schema = { path = "../ron-schema" }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+tempfile = "3"

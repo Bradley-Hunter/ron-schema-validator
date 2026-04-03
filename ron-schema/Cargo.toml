@@ -1,0 +1,13 @@
+[package]
+name = "ron-schema"
+version = "0.1.0"
+edition = "2021"
+description = "Schema definition and validation for RON (Rusty Object Notation) files"
+license = "MIT"
+# repository, readme, keywords, categories — fill in when publishing to crates.io
+
+[dependencies]
+# None for MVP — zero external dependencies
+
+[lints.rust]
+missing_docs = "deny"

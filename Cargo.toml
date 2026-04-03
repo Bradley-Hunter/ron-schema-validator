@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "ron-schema",
+    "ron-schema-cli",
+]
+resolver = "2"
