@@ -3,6 +3,8 @@
  */
 
 use crate::{Span, Spanned};
+/// RON data parser — converts `.ron` source text into a spanned [`RonValue`] tree.
+pub mod parser;
 
 /// A parsed RON data value, preserving bare identifiers for enum validation.
 #[derive(Debug, Clone, PartialEq)]
