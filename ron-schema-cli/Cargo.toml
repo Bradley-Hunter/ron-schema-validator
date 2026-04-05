@@ -4,13 +4,17 @@ version = "0.1.0"
 edition = "2021"
 description = "CLI tool for validating RON files against schemas"
 license = "MIT"
+repository = "https://github.com/Bradley-Hunter/ron-schema-validator"
+readme = "../README.md"
+keywords = ["ron", "schema", "validation", "cli"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "ron-schema"
 path = "src/main.rs"
 
 [dependencies]
-ron-schema = { path = "../ron-schema" }
+ron-schema = { version = "0.1.0", path = "../ron-schema" }
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]

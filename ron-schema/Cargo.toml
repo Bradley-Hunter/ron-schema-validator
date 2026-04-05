@@ -4,10 +4,18 @@ version = "0.1.0"
 edition = "2021"
 description = "Schema definition and validation for RON (Rusty Object Notation) files"
 license = "MIT"
-# repository, readme, keywords, categories — fill in when publishing to crates.io
+repository = "https://github.com/Bradley-Hunter/ron-schema-validator"
+readme = "../README.md"
+keywords = ["ron", "schema", "validation", "parser"]
+categories = ["parser-implementations", "config"]
 
 [dependencies]
 # None for MVP — zero external dependencies
 
 [lints.rust]
 missing_docs = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

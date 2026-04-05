@@ -4,7 +4,7 @@ Schema validation for [RON (Rusty Object Notation)](https://github.com/ron-rs/ro
 
 RON has no equivalent of JSON Schema. This project fills that gap.
 
-> **Status:** Early development. Type definitions and error types are in place; parsers and validation logic are not yet implemented.
+> **Status:** v0.1 MVP complete. Schema parser, RON parser, validator, and CLI are all functional with test coverage.
 
 ## Schema Format
 
@@ -91,7 +91,7 @@ let value = parse_ron(ron_source)?;
 let errors = validate(&schema, &value);
 
 for error in &errors {
-    let source_line = extract_source_line(ron_source, &error.span);
+    let source_line = extract_source_line(ron_source, error.span);
     // Render however you like
 }
 ```
@@ -134,11 +134,11 @@ Requires Rust 2021 edition.
 - [x] Schema AST types
 - [x] RON value types
 - [x] Source line extraction for diagnostics
-- [ ] Schema parser (`.ronschema` → AST)
-- [ ] RON data parser (`.ron` → `Spanned<RonValue>`)
-- [ ] Validation engine
-- [ ] CLI wiring (file I/O, error rendering, batch mode)
-- [ ] Test coverage for all error kinds
+- [X] Schema parser (`.ronschema` → AST)
+- [X] RON data parser (`.ron` → `Spanned<RonValue>`)
+- [X] Validation engine
+- [X] CLI wiring (file I/O, error rendering, batch mode)
+- [X] Test coverage for all error kinds
 
 ### Future (v1.0+)
 

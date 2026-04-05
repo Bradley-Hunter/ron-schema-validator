@@ -2,9 +2,9 @@
  * Author: Bradley Hunter
  */
 
-use crate::span::*;
+use crate::span::{Position, Span, Spanned};
 use crate::error::{RonErrorKind, RonParseError};
-use super::*;
+use super::{RonValue, RonStruct};
 
 #[derive(Debug)]
 struct Parser<'a> {
@@ -29,17 +29,14 @@ impl<'a> Parser<'a> {
     }
 
     fn advance(&mut self) {
-        match self.peek() {
-            Some(byte) => {
-                if byte == b'\n'{
-                    self.column = 1;
-                    self.line += 1;
-                } else {
-                    self.column += 1;
-                }
-                self.offset += 1;
-            },
-            None => {}
+        if let Some(byte) = self.peek() {
+            if byte == b'\n'{
+                self.column = 1;
+                self.line += 1;
+            } else {
+                self.column += 1;
+            }
+            self.offset += 1;
         } 
     }
 
@@ -134,6 +131,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn parse_value(&mut self) -> Result<Spanned<RonValue>, RonParseError> {
         self.skip_whitespace();
         let start = self.position();
@@ -199,8 +197,7 @@ impl<'a> Parser<'a> {
                             has_dot = true;
                             self.advance();
                         },
-                        Some(_) => {break;}
-                        None => {break;}
+                        Some(_) | None => {break;}
                     }
                 }
 
@@ -209,28 +206,28 @@ impl<'a> Parser<'a> {
                 if has_dot {
                     let num_float = number_str.parse::<f64>();
                     if let Ok(num) = num_float {
-                        return Ok(Spanned {
+                        Ok(Spanned {
                             value: RonValue::Float(num),
                             span: Span { start, end },
-                        });
+                        })
                     } else {
-                        return Err(RonParseError { 
+                        Err(RonParseError { 
                             span: Span { start, end }, 
                             kind: RonErrorKind::InvalidNumber { text: number_str.to_string() } 
-                        });
+                        })
                     }
                 } else {
                     let num_int = number_str.parse::<i64>();
                     if let Ok(num) = num_int {
-                        return Ok(Spanned {
+                        Ok(Spanned {
                             value: RonValue::Integer(num),
                             span: Span { start, end },
-                        });
+                        })
                     } else {
-                        return Err(RonParseError { 
+                        Err(RonParseError { 
                             span: Span { start, end }, 
                             kind: RonErrorKind::InvalidNumber { text: number_str.to_string() } 
-                        });
+                        })
                     }
                 }
             },
@@ -240,29 +237,29 @@ impl<'a> Parser<'a> {
                 let identifier_span = identifier.span;
                 match word {
                     "true" => {
-                        return Ok(Spanned { value: RonValue::Bool(true), span: identifier_span });
+                        Ok(Spanned { value: RonValue::Bool(true), span: identifier_span })
                     },
                     "false" => {
-                        return Ok(Spanned { value: RonValue::Bool(false), span: identifier_span });
+                        Ok(Spanned { value: RonValue::Bool(false), span: identifier_span })
                     }
                     "None" => {
-                        return Ok(Spanned { value: RonValue::Option(None), span: identifier_span });
+                        Ok(Spanned { value: RonValue::Option(None), span: identifier_span })
                     }
                     "Some" => {
                         self.skip_whitespace();
                         self.expect_char(b'(')?;
                         let inner = self.parse_value()?;
                         self.expect_char(b')')?;
-                        return Ok(Spanned { 
+                        Ok(Spanned { 
                             value: RonValue::Option(Some(Box::new(inner))), 
                             span: Span { start, end: self.position() } 
-                        });
+                        })
                     }
                     _ => {
-                        return Ok(Spanned { 
+                        Ok(Spanned { 
                             value: RonValue::Identifier(word.to_string()), 
                             span: identifier_span 
-                        });
+                        })
                     }
                 }
             },
@@ -282,10 +279,10 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.expect_char(b']')?;
-                return Ok(Spanned { 
+                Ok(Spanned { 
                     value: RonValue::List(elements), 
                     span: Span { start, end: self.position() } 
-                });
+                })
             },
             Some(b'(') => {
                 self.advance();
@@ -318,7 +315,7 @@ impl<'a> Parser<'a> {
                 let close_span_start = self.position();
                 self.expect_char(b')')?;
                 let close_span = Span{ start: close_span_start, end: self.position() };
-                return Ok(Spanned { 
+                Ok(Spanned { 
                     value: RonValue::Struct(RonStruct { fields, close_span }), 
                     span: Span { start, end: self.position() } 
                 })
@@ -326,28 +323,30 @@ impl<'a> Parser<'a> {
             Some(b) => {
                 self.advance();
                 let end = self.position();
-                return Err(RonParseError { 
+                Err(RonParseError { 
                     span: Span { start, end }, 
                     kind: RonErrorKind::UnexpectedToken { 
                         expected: "value".to_string(), 
                         found: format!("{}", b as char) 
                     } 
-                });
+                })
             },
             None => {
-                return Err(RonParseError { 
+                Err(RonParseError { 
                     span: Span { start, end: start }, 
                     kind: RonErrorKind::UnexpectedToken { 
                         expected: "value".to_string(), 
                         found: "end of file".to_string() 
                     } 
-                });
+                })
             }
         }
     }
 }
 
 /// Parses a RON data source string into a spanned value tree.
+///
+/// # Errors
 ///
 /// Returns a [`RonParseError`] if the source contains syntax errors.
 pub fn parse_ron(source: &str) -> Result<Spanned<RonValue>, RonParseError> {

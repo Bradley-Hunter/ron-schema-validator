@@ -10,6 +10,7 @@ use crate::error::{ErrorKind, ValidationError};
 ///
 /// Returns all validation errors found — does not stop at the first error.
 /// An empty vec means the data is valid.
+#[must_use] 
 pub fn validate(schema: &Schema, value: &Spanned<RonValue>) -> Vec<ValidationError> {
     let mut errors = Vec::new();
     validate_struct(&schema.root, value, "", &mut errors, &schema.enums);
@@ -26,14 +27,14 @@ fn describe(value: &RonValue) -> String {
             if s.len() > 20 {
                 format!("String(\"{}...\")", &s[..20])
             } else {
-                format!("String(\"{}\")", s)
+                format!("String(\"{s}\")")
             }
         }
-        RonValue::Integer(n) => format!("Integer({})", n),
-        RonValue::Float(f) => format!("Float({})", f),
-        RonValue::Bool(b) => format!("Bool({})", b),
+        RonValue::Integer(n) => format!("Integer({n})"),
+        RonValue::Float(f) => format!("Float({f})"),
+        RonValue::Bool(b) => format!("Bool({b})"),
         RonValue::Option(_) => "Option".to_string(),
-        RonValue::Identifier(s) => format!("Identifier({})", s),
+        RonValue::Identifier(s) => format!("Identifier({s})"),
         RonValue::List(_) => "List".to_string(),
         RonValue::Struct(_) => "Struct".to_string(),
     }
@@ -47,7 +48,7 @@ fn build_path(parent: &str, field: &str) -> String {
     if parent.is_empty() {
         field.to_string()
     } else {
-        format!("{}.{}", parent, field)
+        format!("{parent}.{field}")
     }
 }
 
@@ -56,6 +57,7 @@ fn build_path(parent: &str, field: &str) -> String {
 /// Matches on the expected type and checks that the actual value conforms.
 /// For composite types (Option, List, Struct), recurses into the inner values.
 /// Errors are collected into the `errors` vec — validation does not stop at the first error.
+#[allow(clippy::too_many_lines)]
 fn validate_type(
     expected: &SchemaType,
     actual: &Spanned<RonValue>,
@@ -137,7 +139,7 @@ fn validate_type(
         SchemaType::List(element_type) => {
             if let RonValue::List(elements) = &actual.value {
                 for (index, element) in elements.iter().enumerate() {
-                    let element_path = format!("{}[{}]", path, index);
+                    let element_path = format!("{path}[{index}]");
                     validate_type(element_type, element, &element_path, errors, enums);
                 }
             } else {
@@ -191,7 +193,7 @@ fn validate_type(
 /// Three checks:
 /// 1. Missing fields — in schema but not in data (points to closing paren)
 /// 2. Unknown fields — in data but not in schema (points to field name)
-/// 3. Matching fields — present in both, recurse into validate_type
+/// 3. Matching fields — present in both, recurse into `validate_type`
 fn validate_struct(
     struct_def: &StructDef,
     actual: &Spanned<RonValue>,
@@ -200,18 +202,15 @@ fn validate_struct(
     enums: &HashMap<String, EnumDef>,
 ) {
     // Value must be a struct — if not, report and bail (can't check fields of a non-struct)
-    let data_struct = match &actual.value {
-        RonValue::Struct(s) => s,
-        _ => {
-            errors.push(ValidationError {
-                path: path.to_string(),
-                span: actual.span,
-                kind: ErrorKind::ExpectedStruct {
-                    found: describe(&actual.value),
-                },
-            });
-            return;
-        }
+    let RonValue::Struct(data_struct) = &actual.value else {
+        errors.push(ValidationError {
+            path: path.to_string(),
+            span: actual.span,
+            kind: ErrorKind::ExpectedStruct {
+                found: describe(&actual.value),
+            },
+        });
+        return;
     };
 
     // Build a lookup map from data fields for O(1) access by name

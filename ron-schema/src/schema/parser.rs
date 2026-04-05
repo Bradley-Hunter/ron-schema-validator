@@ -4,7 +4,7 @@
 
 use crate::span::{Position, Span, Spanned};
 use crate::error::{SchemaParseError, SchemaErrorKind};
-use super::*;
+use super::{SchemaType, FieldDef, StructDef, EnumDef, HashSet, Schema, HashMap};
 
 #[derive(Debug)]
 struct Parser<'a> {
@@ -29,17 +29,14 @@ impl<'a> Parser<'a> {
     }
 
     fn advance(&mut self) {
-        match self.peek() {
-            Some(byte) => {
-                if byte == b'\n'{
-                    self.column = 1;
-                    self.line += 1;
-                } else {
-                    self.column += 1;
-                }
-                self.offset += 1;
-            },
-            None => {}
+        if let Some(byte) = self.peek() {
+            if byte == b'\n'{
+                self.column = 1;
+                self.line += 1;
+            } else {
+                self.column += 1;
+            }
+            self.offset += 1;
         } 
     }
 
@@ -216,10 +213,10 @@ impl<'a> Parser<'a> {
         self.expect_char(b':')?;
         self.skip_whitespace();
         let type_ = self.parse_type()?;
-        return Ok(FieldDef{
+        Ok(FieldDef{
             name,
             type_
-        });
+        })
     }
 
     fn parse_struct(&mut self) -> Result<StructDef, SchemaParseError> {
@@ -293,6 +290,8 @@ impl<'a> Parser<'a> {
 
 /// Parses a `.ronschema` source string into a [`Schema`].
 ///
+/// # Errors
+///
 /// Returns a [`SchemaParseError`] if the source contains syntax errors,
 /// duplicate definitions, or unresolved enum references.
 pub fn parse_schema(source: &str) -> Result<Schema, SchemaParseError> {
@@ -356,10 +355,7 @@ fn check_schema_type(
                 });
             }
         }
-        SchemaType::Option(inner) => {
-            check_schema_type(inner, span, enums)?;
-        }
-        SchemaType::List(inner) => {
+        SchemaType::Option(inner) | SchemaType::List(inner) => {
             check_schema_type(inner, span, enums)?;
         }
         SchemaType::Struct(struct_def) => {

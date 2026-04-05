@@ -22,6 +22,7 @@ pub struct SourceLine {
 /// Extracts a source line and highlight positions from the original source text for a given span.
 ///
 /// For spans that cross multiple lines, the highlight extends to the end of the first line.
+#[must_use] 
 pub fn extract_source_line(source: &str, span: Span) -> SourceLine {
     let mut line_start = span.start.offset;
     while line_start > 0 && source.as_bytes()[line_start - 1] != b'\n' {
@@ -42,6 +43,6 @@ pub fn extract_source_line(source: &str, span: Span) -> SourceLine {
         line_end - line_start
     };
 
-    return SourceLine { line_number: span.start.line, line_text, highlight_start, highlight_end };
+    SourceLine { line_number: span.start.line, line_text, highlight_start, highlight_end }
     
 }
