@@ -13,7 +13,7 @@ use crate::error::{ErrorKind, ValidationError};
 #[must_use] 
 pub fn validate(schema: &Schema, value: &Spanned<RonValue>) -> Vec<ValidationError> {
     let mut errors = Vec::new();
-    validate_struct(&schema.root, value, "", &mut errors, &schema.enums);
+    validate_struct(&schema.root, value, "", &mut errors, &schema.enums, &schema.aliases);
     errors
 }
 use crate::ron::RonValue;
@@ -64,6 +64,7 @@ fn validate_type(
     path: &str,
     errors: &mut Vec<ValidationError>,
     enums: &HashMap<String, EnumDef>,
+    aliases: &HashMap<String, Spanned<SchemaType>>,
 ) {
     match expected {
         // Primitives: check that the value variant matches the schema type.
@@ -121,7 +122,7 @@ fn validate_type(
         SchemaType::Option(inner_type) => match &actual.value {
             RonValue::Option(None) => {}
             RonValue::Option(Some(inner_value)) => {
-                validate_type(inner_type, inner_value, path, errors, enums);
+                validate_type(inner_type, inner_value, path, errors, enums, aliases);
             }
             _ => {
                 errors.push(ValidationError {
@@ -140,7 +141,7 @@ fn validate_type(
             if let RonValue::List(elements) = &actual.value {
                 for (index, element) in elements.iter().enumerate() {
                     let element_path = format!("{path}[{index}]");
-                    validate_type(element_type, element, &element_path, errors, enums);
+                    validate_type(element_type, element, &element_path, errors, enums, aliases);
                 }
             } else {
                 errors.push(ValidationError {
@@ -181,9 +182,18 @@ fn validate_type(
             }
         }
 
+        // AliasRef: look up the alias and validate against the resolved type.
+        // Error messages use the alias name (e.g., "expected Cost") not the expanded type.
+        SchemaType::AliasRef(alias_name) => {
+            if let Some(resolved) = aliases.get(alias_name) {
+                validate_type(&resolved.value, actual, path, errors, enums, aliases);
+            }
+            // If alias doesn't exist, the parser already caught it — unreachable in practice.
+        }
+
         // Nested struct: recurse into validate_struct.
         SchemaType::Struct(struct_def) => {
-            validate_struct(struct_def, actual, path, errors, enums);
+            validate_struct(struct_def, actual, path, errors, enums, aliases);
         }
     }
 }
@@ -200,6 +210,7 @@ fn validate_struct(
     path: &str,
     errors: &mut Vec<ValidationError>,
     enums: &HashMap<String, EnumDef>,
+    aliases: &HashMap<String, Spanned<SchemaType>>,
 ) {
     // Value must be a struct — if not, report and bail (can't check fields of a non-struct)
     let RonValue::Struct(data_struct) = &actual.value else {
@@ -257,7 +268,7 @@ fn validate_struct(
     for field_def in &struct_def.fields {
         if let Some(data_value) = data_map.get(field_def.name.value.as_str()) {
             let field_path = build_path(path, &field_def.name.value);
-            validate_type(&field_def.type_.value, data_value, &field_path, errors, enums);
+            validate_type(&field_def.type_.value, data_value, &field_path, errors, enums, aliases);
         }
     }
 }
@@ -685,5 +696,65 @@ mod tests {
         let errs = validate_str(schema, data);
         // name: TypeMismatch, card_types[0]: InvalidEnumVariant, power: TypeMismatch
         assert_eq!(errs.len(), 3);
+    }
+
+    // ========================================================
+    // Type alias validation
+    // ========================================================
+
+    // Alias to a struct type validates correctly.
+    #[test]
+    fn alias_struct_valid() {
+        let schema = "(\n  cost: Cost,\n)\ntype Cost = (generic: Integer,)";
+        let data = "(cost: (generic: 5))";
+        let errs = validate_str(schema, data);
+        assert!(errs.is_empty());
+    }
+
+    // Alias to a struct type catches type mismatch inside.
+    #[test]
+    fn alias_struct_type_mismatch() {
+        let schema = "(\n  cost: Cost,\n)\ntype Cost = (generic: Integer,)";
+        let data = "(cost: (generic: \"five\"))";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::TypeMismatch { expected, .. } if expected == "Integer"));
+    }
+
+    // Alias to a primitive type validates correctly.
+    #[test]
+    fn alias_primitive_valid() {
+        let schema = "(\n  name: Name,\n)\ntype Name = String";
+        let data = "(name: \"hello\")";
+        let errs = validate_str(schema, data);
+        assert!(errs.is_empty());
+    }
+
+    // Alias to a primitive type catches mismatch.
+    #[test]
+    fn alias_primitive_mismatch() {
+        let schema = "(\n  name: Name,\n)\ntype Name = String";
+        let data = "(name: 42)";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+    }
+
+    // Alias used inside a list validates each element.
+    #[test]
+    fn alias_in_list_valid() {
+        let schema = "(\n  costs: [Cost],\n)\ntype Cost = (generic: Integer,)";
+        let data = "(costs: [(generic: 1), (generic: 2)])";
+        let errs = validate_str(schema, data);
+        assert!(errs.is_empty());
+    }
+
+    // Alias used inside a list catches element errors.
+    #[test]
+    fn alias_in_list_element_error() {
+        let schema = "(\n  costs: [Cost],\n)\ntype Cost = (generic: Integer,)";
+        let data = "(costs: [(generic: 1), (generic: \"two\")])";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].path, "costs[1].generic");
     }
 }

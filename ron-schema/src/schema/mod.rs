@@ -35,6 +35,8 @@ pub enum SchemaType {
     List(Box<SchemaType>),
     /// A reference to a named enum definition.
     EnumRef(String),
+    /// A reference to a named type alias.
+    AliasRef(String),
     /// An inline nested struct — matches `(field: value, ...)`.
     Struct(StructDef),
 }
@@ -62,4 +64,6 @@ pub struct Schema {
     pub root: StructDef,
     /// Named enum definitions, keyed by name for O(1) lookup during validation.
     pub enums: HashMap<String, EnumDef>,
+    /// Type aliases, keyed by name. Stored as-is (not expanded) for better error messages.
+    pub aliases: HashMap<String, Spanned<SchemaType>>,
 }

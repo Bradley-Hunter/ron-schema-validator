@@ -286,6 +286,19 @@ impl<'a> Parser<'a> {
         self.expect_char(b'}')?;
         Ok(EnumDef { name: name.value, variants })
     }
+
+    /// Parses `type Name = <type>` — assumes the "type" keyword has already been confirmed.
+    fn parse_alias_def(&mut self) -> Result<(String, Spanned<SchemaType>), SchemaParseError> {
+        self.skip_whitespace();
+        self.parse_identifier()?; // consume "type" keyword
+        self.skip_whitespace();
+        let name = self.parse_identifier()?;
+        self.skip_whitespace();
+        self.expect_char(b'=')?;
+        self.skip_whitespace();
+        let type_ = self.parse_type()?;
+        Ok((name.value, type_))
+    }
 }
 
 /// Parses a `.ronschema` source string into a [`Schema`].
@@ -298,72 +311,206 @@ pub fn parse_schema(source: &str) -> Result<Schema, SchemaParseError> {
     let mut parser = Parser::new(source);
     parser.skip_whitespace();
 
-    let root = if parser.peek() == Some(b'(') {
+    let mut root = if parser.peek() == Some(b'(') {
         parser.parse_struct()?
     } else {
         StructDef { fields: Vec::new() }
     };
 
     let mut enums: HashMap<String, EnumDef> = HashMap::new();
+    let mut aliases: HashMap<String, Spanned<SchemaType>> = HashMap::new();
+
     loop {
         parser.skip_whitespace();
         if parser.peek().is_none() {
             break;
         }
-        let enum_def = parser.parse_enum_def()?;
-        if let Some(old) = enums.insert(enum_def.name.clone(), enum_def) {
-            return Err(SchemaParseError {
-                span: Span { start: parser.position(), end: parser.position() },
-                kind: SchemaErrorKind::DuplicateEnum { name: old.name },
-            });
+
+        // Peek ahead to determine if this is "enum" or "type"
+        let start = parser.position();
+        let keyword = parser.parse_identifier()?;
+
+        match keyword.value.as_str() {
+            "enum" => {
+                // Rewind — parse_enum_def expects to consume "enum" itself
+                parser.offset = start.offset;
+                parser.line = start.line;
+                parser.column = start.column;
+
+                let enum_def = parser.parse_enum_def()?;
+                if let Some(old) = enums.insert(enum_def.name.clone(), enum_def) {
+                    return Err(SchemaParseError {
+                        span: Span { start: parser.position(), end: parser.position() },
+                        kind: SchemaErrorKind::DuplicateEnum { name: old.name },
+                    });
+                }
+            }
+            "type" => {
+                // Rewind — parse_alias_def expects to consume "type" itself
+                parser.offset = start.offset;
+                parser.line = start.line;
+                parser.column = start.column;
+
+                let (name, type_) = parser.parse_alias_def()?;
+                if aliases.contains_key(&name) {
+                    return Err(SchemaParseError {
+                        span: type_.span,
+                        kind: SchemaErrorKind::DuplicateAlias { name },
+                    });
+                }
+                aliases.insert(name, type_);
+            }
+            other => {
+                return Err(SchemaParseError {
+                    span: keyword.span,
+                    kind: SchemaErrorKind::UnexpectedToken {
+                        expected: "\"enum\" or \"type\"".to_string(),
+                        found: other.to_string(),
+                    },
+                });
+            }
         }
     }
 
-    verify_enum_refs(&root, &enums)?;
+    // Reclassify EnumRefs that are actually aliases — in the root struct and in alias definitions.
+    // Collect alias names into a set to avoid borrow conflicts when mutating alias values.
+    let alias_names: HashSet<String> = aliases.keys().cloned().collect();
+    reclassify_refs_in_struct_by_name(&mut root, &alias_names);
+    for spanned_type in aliases.values_mut() {
+        reclassify_refs_in_type_by_name(&mut spanned_type.value, &alias_names);
+    }
 
-    Ok(Schema { root, enums })
+    // Verify all refs resolve to a known enum or alias
+    verify_refs(&root, &enums, &aliases)?;
+
+    // Check for recursive aliases
+    verify_no_recursive_aliases(&aliases)?;
+
+    Ok(Schema { root, enums, aliases })
 }
 
-fn verify_enum_refs(
+/// Reclassifies `EnumRef` names that are actually type aliases into `AliasRef`.
+/// Mutates the struct in place.
+fn reclassify_refs_in_struct_by_name(
+    struct_def: &mut StructDef,
+    alias_names: &HashSet<String>,
+) {
+    for field in &mut struct_def.fields {
+        reclassify_refs_in_type_by_name(&mut field.type_.value, alias_names);
+    }
+}
+
+fn reclassify_refs_in_type_by_name(
+    schema_type: &mut SchemaType,
+    alias_names: &HashSet<String>,
+) {
+    match schema_type {
+        SchemaType::EnumRef(name) if alias_names.contains(name.as_str()) => {
+            *schema_type = SchemaType::AliasRef(name.clone());
+        }
+        SchemaType::Option(inner) | SchemaType::List(inner) => {
+            reclassify_refs_in_type_by_name(inner, alias_names);
+        }
+        SchemaType::Struct(struct_def) => {
+            reclassify_refs_in_struct_by_name(struct_def, alias_names);
+        }
+        _ => {}
+    }
+}
+
+/// Verifies all `EnumRef` names resolve to a defined enum.
+/// (`AliasRefs` have already been reclassified, so any remaining `EnumRef` must be an actual enum.)
+fn verify_refs(
     struct_def: &StructDef,
     enums: &HashMap<String, EnumDef>,
+    aliases: &HashMap<String, Spanned<SchemaType>>,
 ) -> Result<(), SchemaParseError> {
     for field in &struct_def.fields {
-        verify_type_enum_refs(&field.type_, enums)?;
+        check_type_refs(&field.type_.value, field.type_.span, enums, aliases)?;
     }
     Ok(())
 }
 
-fn verify_type_enum_refs(
-    spanned_type: &Spanned<SchemaType>,
-    enums: &HashMap<String, EnumDef>,
-) -> Result<(), SchemaParseError> {
-    check_schema_type(&spanned_type.value, spanned_type.span, enums)
-}
-
-fn check_schema_type(
+fn check_type_refs(
     schema_type: &SchemaType,
     span: Span,
     enums: &HashMap<String, EnumDef>,
+    aliases: &HashMap<String, Spanned<SchemaType>>,
 ) -> Result<(), SchemaParseError> {
     match schema_type {
         SchemaType::EnumRef(name) => {
             if !enums.contains_key(name) {
                 return Err(SchemaParseError {
                     span,
-                    kind: SchemaErrorKind::UnresolvedEnum { name: name.clone() },
+                    kind: SchemaErrorKind::UnresolvedType { name: name.clone() },
+                });
+            }
+        }
+        SchemaType::AliasRef(name) => {
+            if !aliases.contains_key(name) {
+                return Err(SchemaParseError {
+                    span,
+                    kind: SchemaErrorKind::UnresolvedType { name: name.clone() },
                 });
             }
         }
         SchemaType::Option(inner) | SchemaType::List(inner) => {
-            check_schema_type(inner, span, enums)?;
+            check_type_refs(inner, span, enums, aliases)?;
         }
         SchemaType::Struct(struct_def) => {
-            verify_enum_refs(struct_def, enums)?;
+            verify_refs(struct_def, enums, aliases)?;
         }
         _ => {}
     }
     Ok(())
+}
+
+/// Detects recursive type aliases — an alias that references itself directly or indirectly.
+fn verify_no_recursive_aliases(
+    aliases: &HashMap<String, Spanned<SchemaType>>,
+) -> Result<(), SchemaParseError> {
+    for (name, spanned_type) in aliases {
+        let mut visited = HashSet::new();
+        visited.insert(name.as_str());
+        if let Some(cycle_name) = find_alias_cycle(&spanned_type.value, aliases, &mut visited) {
+            return Err(SchemaParseError {
+                span: spanned_type.span,
+                kind: SchemaErrorKind::RecursiveAlias { name: cycle_name },
+            });
+        }
+    }
+    Ok(())
+}
+
+fn find_alias_cycle<'a>(
+    schema_type: &'a SchemaType,
+    aliases: &'a HashMap<String, Spanned<SchemaType>>,
+    visited: &mut HashSet<&'a str>,
+) -> Option<String> {
+    match schema_type {
+        SchemaType::AliasRef(name) => {
+            if visited.contains(name.as_str()) {
+                return Some(name.clone());
+            }
+            visited.insert(name.as_str());
+            if let Some(target) = aliases.get(name) {
+                return find_alias_cycle(&target.value, aliases, visited);
+            }
+            None
+        }
+        SchemaType::Option(inner) | SchemaType::List(inner) => {
+            find_alias_cycle(inner, aliases, visited)
+        }
+        SchemaType::Struct(struct_def) => {
+            for field in &struct_def.fields {
+                if let Some(cycle) = find_alias_cycle(&field.type_.value, aliases, visited) {
+                    return Some(cycle);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -850,25 +997,25 @@ mod tests {
         assert_eq!(schema.root.fields[0].name.value, "name");
     }
 
-    // Unresolved enum ref is an error.
+    // Unresolved type ref is an error.
     #[test]
-    fn schema_unresolved_enum_ref() {
+    fn schema_unresolved_type_ref() {
         let err = parse_schema("(\n  f: Faction,\n)").unwrap_err();
-        assert_eq!(err.kind, SchemaErrorKind::UnresolvedEnum { name: "Faction".to_string() });
+        assert_eq!(err.kind, SchemaErrorKind::UnresolvedType { name: "Faction".to_string() });
     }
 
-    // Unresolved enum ref inside Option is an error.
+    // Unresolved type ref inside Option is an error.
     #[test]
-    fn schema_unresolved_enum_ref_in_option() {
+    fn schema_unresolved_type_ref_in_option() {
         let err = parse_schema("(\n  t: Option(Timing),\n)").unwrap_err();
-        assert_eq!(err.kind, SchemaErrorKind::UnresolvedEnum { name: "Timing".to_string() });
+        assert_eq!(err.kind, SchemaErrorKind::UnresolvedType { name: "Timing".to_string() });
     }
 
-    // Unresolved enum ref inside List is an error.
+    // Unresolved type ref inside List is an error.
     #[test]
-    fn schema_unresolved_enum_ref_in_list() {
+    fn schema_unresolved_type_ref_in_list() {
         let err = parse_schema("(\n  t: [CardType],\n)").unwrap_err();
-        assert_eq!(err.kind, SchemaErrorKind::UnresolvedEnum { name: "CardType".to_string() });
+        assert_eq!(err.kind, SchemaErrorKind::UnresolvedType { name: "CardType".to_string() });
     }
 
     // Duplicate enum name is an error.
@@ -876,5 +1023,108 @@ mod tests {
     fn schema_duplicate_enum_name() {
         let err = parse_schema("enum A { X }\nenum A { Y }").unwrap_err();
         assert_eq!(err.kind, SchemaErrorKind::DuplicateEnum { name: "A".to_string() });
+    }
+
+    // ========================================================
+    // Type alias tests — parsing
+    // ========================================================
+
+    // Basic type alias is stored in schema.aliases.
+    #[test]
+    fn alias_stored_in_schema() {
+        let source = "(\n  cost: Cost,\n)\ntype Cost = (generic: Integer,)";
+        let schema = parse_schema(source).unwrap();
+        assert!(schema.aliases.contains_key("Cost"));
+    }
+
+    // Alias field is reclassified from EnumRef to AliasRef.
+    #[test]
+    fn alias_ref_reclassified() {
+        let source = "(\n  cost: Cost,\n)\ntype Cost = (generic: Integer,)";
+        let schema = parse_schema(source).unwrap();
+        assert_eq!(schema.root.fields[0].type_.value, SchemaType::AliasRef("Cost".to_string()));
+    }
+
+    // Alias to a primitive type.
+    #[test]
+    fn alias_to_primitive() {
+        let source = "(\n  name: Name,\n)\ntype Name = String";
+        let schema = parse_schema(source).unwrap();
+        assert_eq!(schema.aliases["Name"].value, SchemaType::String);
+    }
+
+    // Alias to a list type.
+    #[test]
+    fn alias_to_list() {
+        let source = "(\n  tags: Tags,\n)\ntype Tags = [String]";
+        let schema = parse_schema(source).unwrap();
+        assert_eq!(schema.aliases["Tags"].value, SchemaType::List(Box::new(SchemaType::String)));
+    }
+
+    // Alias to an option type.
+    #[test]
+    fn alias_to_option() {
+        let source = "(\n  power: Power,\n)\ntype Power = Option(Integer)";
+        let schema = parse_schema(source).unwrap();
+        assert_eq!(schema.aliases["Power"].value, SchemaType::Option(Box::new(SchemaType::Integer)));
+    }
+
+    // Alias inside a list field is reclassified.
+    #[test]
+    fn alias_ref_inside_list_reclassified() {
+        let source = "(\n  costs: [Cost],\n)\ntype Cost = (generic: Integer,)";
+        let schema = parse_schema(source).unwrap();
+        assert_eq!(
+            schema.root.fields[0].type_.value,
+            SchemaType::List(Box::new(SchemaType::AliasRef("Cost".to_string())))
+        );
+    }
+
+    // Alias inside an option field is reclassified.
+    #[test]
+    fn alias_ref_inside_option_reclassified() {
+        let source = "(\n  cost: Option(Cost),\n)\ntype Cost = (generic: Integer,)";
+        let schema = parse_schema(source).unwrap();
+        assert_eq!(
+            schema.root.fields[0].type_.value,
+            SchemaType::Option(Box::new(SchemaType::AliasRef("Cost".to_string())))
+        );
+    }
+
+    // Enums and aliases can coexist.
+    #[test]
+    fn alias_and_enum_coexist() {
+        let source = "(\n  cost: Cost,\n  kind: Kind,\n)\ntype Cost = (generic: Integer,)\nenum Kind { A, B }";
+        let schema = parse_schema(source).unwrap();
+        assert!(schema.aliases.contains_key("Cost"));
+        assert!(schema.enums.contains_key("Kind"));
+    }
+
+    // ========================================================
+    // Type alias tests — error cases
+    // ========================================================
+
+    // Duplicate alias name is an error.
+    #[test]
+    fn alias_duplicate_name() {
+        let source = "type A = String\ntype A = Integer";
+        let err = parse_schema(source).unwrap_err();
+        assert_eq!(err.kind, SchemaErrorKind::DuplicateAlias { name: "A".to_string() });
+    }
+
+    // Recursive alias is an error.
+    #[test]
+    fn alias_recursive_direct() {
+        let source = "(\n  x: Foo,\n)\ntype Foo = Option(Foo)";
+        let err = parse_schema(source).unwrap_err();
+        assert_eq!(err.kind, SchemaErrorKind::RecursiveAlias { name: "Foo".to_string() });
+    }
+
+    // Indirect recursive alias is an error.
+    #[test]
+    fn alias_recursive_indirect() {
+        let source = "(\n  x: Foo,\n)\ntype Foo = Option(Bar)\ntype Bar = [Foo]";
+        let err = parse_schema(source).unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::RecursiveAlias { .. }));
     }
 }

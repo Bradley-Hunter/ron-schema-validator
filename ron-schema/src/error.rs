@@ -36,6 +36,21 @@ pub enum SchemaErrorKind {
         /// The duplicated field name.
         field_name: String,
     },
+    /// The same type alias name is defined more than once.
+    DuplicateAlias {
+        /// The duplicated alias name.
+        name: String,
+    },
+    /// A type alias references itself, directly or indirectly.
+    RecursiveAlias {
+        /// The alias name involved in the cycle.
+        name: String,
+    },
+    /// A `PascalCase` name could not be resolved to an enum or type alias.
+    UnresolvedType {
+        /// The unresolved type name.
+        name: String,
+    },
     /// A syntax error — the parser encountered a token it did not expect.
     UnexpectedToken {
         /// What the parser expected at this position.
