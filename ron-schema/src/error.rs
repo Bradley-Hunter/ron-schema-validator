@@ -51,6 +51,11 @@ pub enum SchemaErrorKind {
         /// The unresolved type name.
         name: String,
     },
+    /// A map key type is not valid (must be `String`, `Integer`, or an enum type).
+    InvalidMapKeyType {
+        /// A description of the invalid key type.
+        found: String,
+    },
     /// A syntax error — the parser encountered a token it did not expect.
     UnexpectedToken {
         /// What the parser expected at this position.
@@ -141,6 +146,29 @@ pub enum ErrorKind {
     },
     /// Expected `Some(...)` or `None` but found something else.
     ExpectedOption {
+        /// A description of what was actually found.
+        found: String,
+    },
+    /// Expected a map `{ ... }` but found a non-map value.
+    ExpectedMap {
+        /// A description of what was actually found.
+        found: String,
+    },
+    /// A map key has the wrong type.
+    InvalidMapKey {
+        /// A string representation of the key.
+        key: String,
+        /// The type expected by the schema.
+        expected: String,
+        /// A description of what was actually found.
+        found: String,
+    },
+    /// A map value has the wrong type.
+    InvalidMapValue {
+        /// A string representation of the key this value belongs to.
+        key: String,
+        /// The type expected by the schema.
+        expected: String,
         /// A description of what was actually found.
         found: String,
     },

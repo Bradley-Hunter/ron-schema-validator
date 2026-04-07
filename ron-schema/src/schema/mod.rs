@@ -37,6 +37,8 @@ pub enum SchemaType {
     EnumRef(String),
     /// A reference to a named type alias.
     AliasRef(String),
+    /// A map with typed keys and values — matches `{ key: value, ... }`.
+    Map(Box<SchemaType>, Box<SchemaType>),
     /// An inline nested struct — matches `(field: value, ...)`.
     Struct(StructDef),
 }

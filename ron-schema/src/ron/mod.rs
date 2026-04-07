@@ -23,6 +23,8 @@ pub enum RonValue {
     Identifier(String),
     /// A list of values (e.g., `[Creature, Trap]`). Each element carries its own span.
     List(Vec<Spanned<RonValue>>),
+    /// A map of key-value pairs (e.g., `{ "str": 5, "dex": 3 }`). Each key and value carries its own span.
+    Map(Vec<(Spanned<RonValue>, Spanned<RonValue>)>),
     /// A struct with named fields (e.g., `(name: "foo", age: 5)`).
     Struct(RonStruct),
 }

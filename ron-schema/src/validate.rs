@@ -36,6 +36,7 @@ fn describe(value: &RonValue) -> String {
         RonValue::Option(_) => "Option".to_string(),
         RonValue::Identifier(s) => format!("Identifier({s})"),
         RonValue::List(_) => "List".to_string(),
+        RonValue::Map(_) => "Map".to_string(),
         RonValue::Struct(_) => "Struct".to_string(),
     }
 }
@@ -176,6 +177,26 @@ fn validate_type(
                     span: actual.span,
                     kind: ErrorKind::TypeMismatch {
                         expected: enum_name.clone(),
+                        found: describe(&actual.value),
+                    },
+                });
+            }
+        }
+
+        // Map: check value is a map, then validate each key and value.
+        SchemaType::Map(key_type, value_type) => {
+            if let RonValue::Map(entries) = &actual.value {
+                for (key, value) in entries {
+                    let key_desc = describe(&key.value);
+                    validate_type(key_type, key, path, errors, enums, aliases);
+                    let entry_path = format!("{path}[{key_desc}]");
+                    validate_type(value_type, value, &entry_path, errors, enums, aliases);
+                }
+            } else {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    span: actual.span,
+                    kind: ErrorKind::ExpectedMap {
                         found: describe(&actual.value),
                     },
                 });
@@ -756,5 +777,57 @@ mod tests {
         let errs = validate_str(schema, data);
         assert_eq!(errs.len(), 1);
         assert_eq!(errs[0].path, "costs[1].generic");
+    }
+
+    // ========================================================
+    // Map validation
+    // ========================================================
+
+    // Valid map with string keys and integer values.
+    #[test]
+    fn map_valid() {
+        let schema = "(\n  attrs: {String: Integer},\n)";
+        let data = "(attrs: {\"str\": 5, \"dex\": 3})";
+        let errs = validate_str(schema, data);
+        assert!(errs.is_empty());
+    }
+
+    // Empty map is always valid.
+    #[test]
+    fn map_empty_valid() {
+        let schema = "(\n  attrs: {String: Integer},\n)";
+        let data = "(attrs: {})";
+        let errs = validate_str(schema, data);
+        assert!(errs.is_empty());
+    }
+
+    // Non-map value where map expected.
+    #[test]
+    fn map_expected_got_string() {
+        let schema = "(\n  attrs: {String: Integer},\n)";
+        let data = "(attrs: \"not a map\")";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::ExpectedMap { .. }));
+    }
+
+    // Map value with wrong type.
+    #[test]
+    fn map_wrong_value_type() {
+        let schema = "(\n  attrs: {String: Integer},\n)";
+        let data = "(attrs: {\"str\": \"five\"})";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::TypeMismatch { expected, .. } if expected == "Integer"));
+    }
+
+    // Map key with wrong type.
+    #[test]
+    fn map_wrong_key_type() {
+        let schema = "(\n  attrs: {String: Integer},\n)";
+        let data = "(attrs: {42: 5})";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::TypeMismatch { expected, .. } if expected == "String"));
     }
 }

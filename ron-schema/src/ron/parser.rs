@@ -284,6 +284,31 @@ impl<'a> Parser<'a> {
                     span: Span { start, end: self.position() } 
                 })
             },
+            Some(b'{') => {
+                self.advance();
+                let mut entries: Vec<(Spanned<RonValue>, Spanned<RonValue>)> = Vec::new();
+                loop {
+                    self.skip_whitespace();
+                    if let Some(b'}') = self.peek() {
+                        break;
+                    }
+                    let key = self.parse_value()?;
+                    self.skip_whitespace();
+                    self.expect_char(b':')?;
+                    self.skip_whitespace();
+                    let value = self.parse_value()?;
+                    entries.push((key, value));
+                    self.skip_whitespace();
+                    if let Some(b',') = self.peek() {
+                        self.advance();
+                    }
+                }
+                self.expect_char(b'}')?;
+                Ok(Spanned {
+                    value: RonValue::Map(entries),
+                    span: Span { start, end: self.position() },
+                })
+            },
             Some(b'(') => {
                 self.advance();
                 let mut fields: Vec<(Spanned<String>, Spanned<RonValue>)> = Vec::new();
@@ -802,6 +827,61 @@ mod tests {
             assert_eq!(s.fields[0].1.value, RonValue::String("Ashborn Hound".to_string()));
         } else {
             panic!("expected Struct");
+        }
+    }
+
+    // ========================================================
+    // parse_value() — map parsing
+    // ========================================================
+
+    // Parses an empty map.
+    #[test]
+    fn map_empty() {
+        let mut p = parser("{}");
+        let v = p.parse_value().unwrap();
+        if let RonValue::Map(entries) = &v.value {
+            assert!(entries.is_empty());
+        } else {
+            panic!("expected Map");
+        }
+    }
+
+    // Parses a map with string keys.
+    #[test]
+    fn map_string_keys() {
+        let mut p = parser("{\"str\": 5, \"dex\": 3}");
+        let v = p.parse_value().unwrap();
+        if let RonValue::Map(entries) = &v.value {
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].0.value, RonValue::String("str".to_string()));
+            assert_eq!(entries[0].1.value, RonValue::Integer(5));
+        } else {
+            panic!("expected Map");
+        }
+    }
+
+    // Parses a map with integer keys.
+    #[test]
+    fn map_integer_keys() {
+        let mut p = parser("{1: \"one\", 2: \"two\"}");
+        let v = p.parse_value().unwrap();
+        if let RonValue::Map(entries) = &v.value {
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].0.value, RonValue::Integer(1));
+        } else {
+            panic!("expected Map");
+        }
+    }
+
+    // Parses a map with trailing comma.
+    #[test]
+    fn map_trailing_comma() {
+        let mut p = parser("{\"a\": 1,}");
+        let v = p.parse_value().unwrap();
+        if let RonValue::Map(entries) = &v.value {
+            assert_eq!(entries.len(), 1);
+        } else {
+            panic!("expected Map");
         }
     }
 }

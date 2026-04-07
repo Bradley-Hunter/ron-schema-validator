@@ -149,6 +149,35 @@ impl<'a> Parser<'a> {
                     span: Span { start, end },
                 })
             }
+            Some(b'{') => {
+                // Map: consume '{', parse key type, expect ':', parse value type, expect '}'
+                self.advance();
+                self.skip_whitespace();
+                let key_type = self.parse_type()?;
+                // Validate key type is String, Integer, or EnumRef
+                match &key_type.value {
+                    SchemaType::String | SchemaType::Integer | SchemaType::EnumRef(_) => {}
+                    _ => {
+                        return Err(SchemaParseError {
+                            span: key_type.span,
+                            kind: SchemaErrorKind::InvalidMapKeyType {
+                                found: format!("{:?}", key_type.value),
+                            },
+                        });
+                    }
+                }
+                self.skip_whitespace();
+                self.expect_char(b':')?;
+                self.skip_whitespace();
+                let value_type = self.parse_type()?;
+                self.skip_whitespace();
+                self.expect_char(b'}')?;
+                let end = self.position();
+                Ok(Spanned {
+                    value: SchemaType::Map(Box::new(key_type.value), Box::new(value_type.value)),
+                    span: Span { start, end },
+                })
+            }
             Some(b'(') => {
                 let struct_def = self.parse_struct()?;
                 let end = self.position();
@@ -411,6 +440,10 @@ fn reclassify_refs_in_type_by_name(
         SchemaType::Option(inner) | SchemaType::List(inner) => {
             reclassify_refs_in_type_by_name(inner, alias_names);
         }
+        SchemaType::Map(key, value) => {
+            reclassify_refs_in_type_by_name(key, alias_names);
+            reclassify_refs_in_type_by_name(value, alias_names);
+        }
         SchemaType::Struct(struct_def) => {
             reclassify_refs_in_struct_by_name(struct_def, alias_names);
         }
@@ -457,6 +490,10 @@ fn check_type_refs(
         SchemaType::Option(inner) | SchemaType::List(inner) => {
             check_type_refs(inner, span, enums, aliases)?;
         }
+        SchemaType::Map(key, value) => {
+            check_type_refs(key, span, enums, aliases)?;
+            check_type_refs(value, span, enums, aliases)?;
+        }
         SchemaType::Struct(struct_def) => {
             verify_refs(struct_def, enums, aliases)?;
         }
@@ -500,6 +537,12 @@ fn find_alias_cycle<'a>(
         }
         SchemaType::Option(inner) | SchemaType::List(inner) => {
             find_alias_cycle(inner, aliases, visited)
+        }
+        SchemaType::Map(key, value) => {
+            if let Some(cycle) = find_alias_cycle(key, aliases, visited) {
+                return Some(cycle);
+            }
+            find_alias_cycle(value, aliases, visited)
         }
         SchemaType::Struct(struct_def) => {
             for field in &struct_def.fields {
@@ -1126,5 +1169,69 @@ mod tests {
         let source = "(\n  x: Foo,\n)\ntype Foo = Option(Bar)\ntype Bar = [Foo]";
         let err = parse_schema(source).unwrap_err();
         assert!(matches!(err.kind, SchemaErrorKind::RecursiveAlias { .. }));
+    }
+
+    // ========================================================
+    // Map type tests — parsing
+    // ========================================================
+
+    // Parses a map type with String keys and Integer values.
+    #[test]
+    fn parse_type_map_string_to_integer() {
+        let mut p = parser("{String: Integer}");
+        let t = p.parse_type().unwrap();
+        assert_eq!(
+            t.value,
+            SchemaType::Map(Box::new(SchemaType::String), Box::new(SchemaType::Integer))
+        );
+    }
+
+    // Parses a map type with Integer keys.
+    #[test]
+    fn parse_type_map_integer_keys() {
+        let mut p = parser("{Integer: String}");
+        let t = p.parse_type().unwrap();
+        assert_eq!(
+            t.value,
+            SchemaType::Map(Box::new(SchemaType::Integer), Box::new(SchemaType::String))
+        );
+    }
+
+    // Map type field in a schema.
+    #[test]
+    fn schema_map_field() {
+        let source = "(\n  attrs: {String: Integer},\n)";
+        let schema = parse_schema(source).unwrap();
+        assert_eq!(
+            schema.root.fields[0].type_.value,
+            SchemaType::Map(Box::new(SchemaType::String), Box::new(SchemaType::Integer))
+        );
+    }
+
+    // Map with enum key type is allowed.
+    #[test]
+    fn schema_map_enum_key() {
+        let source = "(\n  scores: {Stat: Integer},\n)\nenum Stat { Str, Dex, Con }";
+        let schema = parse_schema(source).unwrap();
+        assert_eq!(
+            schema.root.fields[0].type_.value,
+            SchemaType::Map(Box::new(SchemaType::EnumRef("Stat".to_string())), Box::new(SchemaType::Integer))
+        );
+    }
+
+    // Map with Float key type is rejected.
+    #[test]
+    fn schema_map_float_key_rejected() {
+        let source = "(\n  bad: {Float: String},\n)";
+        let err = parse_schema(source).unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::InvalidMapKeyType { .. }));
+    }
+
+    // Map with Bool key type is rejected.
+    #[test]
+    fn schema_map_bool_key_rejected() {
+        let source = "(\n  bad: {Bool: String},\n)";
+        let err = parse_schema(source).unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::InvalidMapKeyType { .. }));
     }
 }
