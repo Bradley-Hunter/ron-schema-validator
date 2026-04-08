@@ -354,15 +354,27 @@ impl<'a> Parser<'a> {
         let name = self.parse_identifier()?;
         self.skip_whitespace();
         self.expect_char(b'{')?;
-        let mut variants = HashSet::new();
+        let mut variants = HashMap::new();
         loop {
             self.skip_whitespace();
             if let Some(byte) = self.peek() {
                 if byte == b'}' {
-                    break ;
-                } 
+                    break;
+                }
                 let variant = self.parse_identifier()?;
-                variants.insert(variant.value);
+                // Check for associated data: Variant(Type)
+                self.skip_whitespace();
+                let data_type = if self.peek() == Some(b'(') {
+                    self.advance(); // consume '('
+                    self.skip_whitespace();
+                    let t = self.parse_type()?;
+                    self.skip_whitespace();
+                    self.expect_char(b')')?;
+                    Some(t.value)
+                } else {
+                    None
+                };
+                variants.insert(variant.value, data_type);
                 self.skip_whitespace();
                 if self.peek() == Some(b',') {
                     self.advance();
@@ -1036,8 +1048,8 @@ mod tests {
         let e = p.parse_enum_def().unwrap();
         assert_eq!(e.name, "Dir");
         assert_eq!(e.variants.len(), 2);
-        assert!(e.variants.contains("North"));
-        assert!(e.variants.contains("South"));
+        assert!(e.variants.contains_key("North"));
+        assert!(e.variants.contains_key("South"));
     }
 
     // Trailing comma in variant list is allowed.
@@ -1368,5 +1380,30 @@ mod tests {
         let source = "(\n  empty: (),\n)";
         let schema = parse_schema(source).unwrap();
         assert!(matches!(schema.root.fields[0].type_.value, SchemaType::Struct(_)));
+    }
+
+    // ========================================================
+    // Enum variants with data — parsing
+    // ========================================================
+
+    // Parses enum with data variants.
+    #[test]
+    fn parse_enum_data_variant() {
+        let source = "enum Effect { Damage(Integer), Heal(Integer), Draw }";
+        let schema = parse_schema(source).unwrap();
+        let effect = schema.enums.get("Effect").unwrap();
+        assert_eq!(effect.variants.get("Damage"), Some(&Some(SchemaType::Integer)));
+        assert_eq!(effect.variants.get("Heal"), Some(&Some(SchemaType::Integer)));
+        assert_eq!(effect.variants.get("Draw"), Some(&None));
+    }
+
+    // Enum with struct data variant.
+    #[test]
+    fn parse_enum_struct_data_variant() {
+        let source = "enum Action { Move((Integer, Integer)), Wait }";
+        let schema = parse_schema(source).unwrap();
+        let action = schema.enums.get("Action").unwrap();
+        assert!(matches!(action.variants.get("Move"), Some(Some(SchemaType::Tuple(_)))));
+        assert_eq!(action.variants.get("Wait"), Some(&None));
     }
 }

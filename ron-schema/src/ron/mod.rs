@@ -21,6 +21,8 @@ pub enum RonValue {
     Option(Option<Box<Spanned<RonValue>>>),
     /// A bare identifier (e.g., `Creature`, `Sentinels`). Preserved for enum variant validation.
     Identifier(String),
+    /// An enum variant with associated data (e.g., `Damage(5)`).
+    EnumVariant(String, Box<Spanned<RonValue>>),
     /// A list of values (e.g., `[Creature, Trap]`). Each element carries its own span.
     List(Vec<Spanned<RonValue>>),
     /// A map of key-value pairs (e.g., `{ "str": 5, "dex": 3 }`). Each key and value carries its own span.

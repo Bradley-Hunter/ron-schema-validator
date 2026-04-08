@@ -172,6 +172,17 @@ pub enum ErrorKind {
         /// A description of what was actually found.
         found: String,
     },
+    /// An enum variant's associated data does not match the expected type.
+    InvalidVariantData {
+        /// The enum name.
+        enum_name: String,
+        /// The variant name.
+        variant: String,
+        /// The type expected by the schema.
+        expected: String,
+        /// A description of what was actually found.
+        found: String,
+    },
     /// Expected a tuple `(...)` but found a non-tuple value.
     ExpectedTuple {
         /// A description of what was actually found.

@@ -9,13 +9,14 @@ use std::collections::{HashMap, HashSet};
 
 use crate::Spanned;
 
-/// A named enum with a closed set of unit variants.
+/// A named enum with a closed set of variants, optionally carrying associated data.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumDef {
     /// The enum name (e.g., `"CardType"`).
     pub name: String,
-    /// The set of valid variant names.
-    pub variants: HashSet<String>,
+    /// Variant names mapped to their optional associated data type.
+    /// `None` means a unit variant (bare identifier), `Some(type)` means it carries data.
+    pub variants: HashMap<String, Option<SchemaType>>,
 }
 
 /// A type descriptor representing the expected type of a field value.

@@ -55,19 +55,21 @@ A matching `.ron` data file:
 | `{K: V}` | Map with typed keys and values | `{"str": 5, "dex": 3}` |
 | `(T1, T2, ...)` | Positional tuple | `(1.0, 2.5)` |
 | Inline struct | Nested `(...)` with named fields | See example above |
-| Enum reference | Bare identifier from a defined enum | `Creature` |
+| Enum reference | Bare identifier from a defined enum | `Creature`, `Damage(5)` |
 | Type alias | Named type via `type Name = T` | See below |
 
 ### Enums
 
-Define enums after the root struct. Variants are bare identifiers (not strings):
+Define enums after the root struct. Variants can be unit (bare identifiers) or carry associated data:
 
 ```
 (
   status: Status,
+  effect: Effect,
 )
 
 enum Status { Active, Inactive, Pending }
+enum Effect { Damage(Integer), Heal(Integer), Draw }
 ```
 
 ### Type Aliases
@@ -185,9 +187,13 @@ Requires Rust 2021 edition.
 - [x] Tuple parsing in RON data with struct/tuple disambiguation
 - [x] Tuple length and element type validation
 
-### Future (v1.0+)
+### v0.5 — Enum Variants with Data
 
-- [ ] Enum variants with associated data
+- [x] `Variant(Type)` schema syntax
+- [x] `Variant(value)` RON parsing
+- [x] Unit vs data variant validation
+
+### Future (v1.0+)
 - [ ] Schema composition / imports
 - [ ] Custom validation rules (value ranges, string patterns)
 - [ ] Optional field presence (`default` values)

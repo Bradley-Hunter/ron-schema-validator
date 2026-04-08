@@ -256,10 +256,24 @@ impl<'a> Parser<'a> {
                         })
                     }
                     _ => {
-                        Ok(Spanned { 
-                            value: RonValue::Identifier(word.to_string()), 
-                            span: identifier_span 
-                        })
+                        // Check for enum variant with data: Identifier(value)
+                        self.skip_whitespace();
+                        if self.peek() == Some(b'(') {
+                            self.advance(); // consume '('
+                            self.skip_whitespace();
+                            let inner = self.parse_value()?;
+                            self.skip_whitespace();
+                            self.expect_char(b')')?;
+                            Ok(Spanned {
+                                value: RonValue::EnumVariant(word.to_string(), Box::new(inner)),
+                                span: Span { start, end: self.position() },
+                            })
+                        } else {
+                            Ok(Spanned {
+                                value: RonValue::Identifier(word.to_string()),
+                                span: identifier_span,
+                            })
+                        }
                     }
                 }
             },
@@ -999,5 +1013,51 @@ mod tests {
         } else {
             panic!("expected Tuple, got {:?}", v.value);
         }
+    }
+
+    // ========================================================
+    // parse_value() — enum variant with data
+    // ========================================================
+
+    // Parses an enum variant with integer data.
+    #[test]
+    fn enum_variant_with_integer_data() {
+        let mut p = parser("Damage(5)");
+        let v = p.parse_value().unwrap();
+        if let RonValue::EnumVariant(name, data) = &v.value {
+            assert_eq!(name, "Damage");
+            assert_eq!(data.value, RonValue::Integer(5));
+        } else {
+            panic!("expected EnumVariant, got {:?}", v.value);
+        }
+    }
+
+    // Parses an enum variant with string data.
+    #[test]
+    fn enum_variant_with_string_data() {
+        let mut p = parser("Message(\"hello\")");
+        let v = p.parse_value().unwrap();
+        if let RonValue::EnumVariant(name, data) = &v.value {
+            assert_eq!(name, "Message");
+            assert_eq!(data.value, RonValue::String("hello".to_string()));
+        } else {
+            panic!("expected EnumVariant, got {:?}", v.value);
+        }
+    }
+
+    // Bare identifier without parens is still Identifier.
+    #[test]
+    fn bare_identifier_unchanged() {
+        let mut p = parser("Creature,");
+        let v = p.parse_value().unwrap();
+        assert_eq!(v.value, RonValue::Identifier("Creature".to_string()));
+    }
+
+    // Some(5) is still parsed as Option, not EnumVariant.
+    #[test]
+    fn some_not_enum_variant() {
+        let mut p = parser("Some(5)");
+        let v = p.parse_value().unwrap();
+        assert!(matches!(v.value, RonValue::Option(Some(_))));
     }
 }

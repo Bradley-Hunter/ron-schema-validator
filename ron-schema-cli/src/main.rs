@@ -19,6 +19,7 @@ fn error_code(kind: &ErrorKind) -> &'static str {
         ErrorKind::ExpectedStruct { .. } => "expected-struct",
         ErrorKind::ExpectedList { .. } => "expected-list",
         ErrorKind::ExpectedOption { .. } => "expected-option",
+        ErrorKind::InvalidVariantData { .. } => "invalid-variant-data",
         ErrorKind::ExpectedMap { .. } => "expected-map",
         ErrorKind::InvalidMapKey { .. } => "invalid-map-key",
         ErrorKind::InvalidMapValue { .. } => "invalid-map-value",
@@ -61,6 +62,9 @@ fn error_message(error: &ValidationError) -> String {
         ErrorKind::ExpectedOption { found } => {
             format!("field `{}`: expected Some(...) or None, found {}", error.path, found)
         }
+        ErrorKind::InvalidVariantData { enum_name, variant, expected, found } => {
+            format!("field `{}`: variant `{}::{}` expected {}, found {}", error.path, enum_name, variant, expected, found)
+        }
         ErrorKind::ExpectedMap { found } => {
             format!("field `{}`: expected map, found {}", error.path, found)
         }
@@ -98,6 +102,7 @@ fn underline_label(kind: &ErrorKind) -> String {
         ErrorKind::ExpectedStruct { .. } => "expected struct".to_string(),
         ErrorKind::ExpectedList { .. } => "expected list".to_string(),
         ErrorKind::ExpectedOption { .. } => "expected Some(...) or None".to_string(),
+        ErrorKind::InvalidVariantData { expected, .. } => format!("expected {expected}"),
         ErrorKind::ExpectedMap { .. } => "expected map".to_string(),
         ErrorKind::InvalidMapKey { expected, .. } => format!("expected {expected}"),
         ErrorKind::InvalidMapValue { expected, .. } => format!("expected {expected}"),

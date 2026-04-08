@@ -35,6 +35,7 @@ fn describe(value: &RonValue) -> String {
         RonValue::Bool(b) => format!("Bool({b})"),
         RonValue::Option(_) => "Option".to_string(),
         RonValue::Identifier(s) => format!("Identifier({s})"),
+        RonValue::EnumVariant(name, _) => format!("{name}(...)"),
         RonValue::List(_) => "List".to_string(),
         RonValue::Map(_) => "Map".to_string(),
         RonValue::Tuple(_) => "Tuple".to_string(),
@@ -156,31 +157,88 @@ fn validate_type(
             }
         }
 
-        // EnumRef: value must be an Identifier whose name is in the enum's variant set.
-        // The enum is guaranteed to exist — the schema parser verified all references.
+        // EnumRef: value must be a known variant. Unit variants are bare identifiers,
+        // data variants are EnumVariant(name, data). The schema defines which variants
+        // exist and whether they carry data.
         SchemaType::EnumRef(enum_name) => {
             let enum_def = &enums[enum_name];
-            if let RonValue::Identifier(variant) = &actual.value {
-                if !enum_def.variants.contains(variant) {
+            let variant_names: Vec<String> = enum_def.variants.keys().cloned().collect();
+
+            match &actual.value {
+                // Bare identifier — must be a known unit variant
+                RonValue::Identifier(variant) => {
+                    match enum_def.variants.get(variant) {
+                        None => {
+                            errors.push(ValidationError {
+                                path: path.to_string(),
+                                span: actual.span,
+                                kind: ErrorKind::InvalidEnumVariant {
+                                    enum_name: enum_name.clone(),
+                                    variant: variant.clone(),
+                                    valid: variant_names,
+                                },
+                            });
+                        }
+                        Some(Some(_expected_data_type)) => {
+                            // Variant exists but expects data — bare identifier is wrong
+                            errors.push(ValidationError {
+                                path: path.to_string(),
+                                span: actual.span,
+                                kind: ErrorKind::InvalidVariantData {
+                                    enum_name: enum_name.clone(),
+                                    variant: variant.clone(),
+                                    expected: "data".to_string(),
+                                    found: "unit variant".to_string(),
+                                },
+                            });
+                        }
+                        Some(None) => {} // Unit variant, matches
+                    }
+                }
+                // Enum variant with data — must be a known data variant, and data must match
+                RonValue::EnumVariant(variant, data) => {
+                    match enum_def.variants.get(variant) {
+                        None => {
+                            errors.push(ValidationError {
+                                path: path.to_string(),
+                                span: actual.span,
+                                kind: ErrorKind::InvalidEnumVariant {
+                                    enum_name: enum_name.clone(),
+                                    variant: variant.clone(),
+                                    valid: variant_names,
+                                },
+                            });
+                        }
+                        Some(None) => {
+                            // Variant exists but is a unit variant — data is unexpected
+                            errors.push(ValidationError {
+                                path: path.to_string(),
+                                span: actual.span,
+                                kind: ErrorKind::InvalidVariantData {
+                                    enum_name: enum_name.clone(),
+                                    variant: variant.clone(),
+                                    expected: "unit variant".to_string(),
+                                    found: describe(&data.value),
+                                },
+                            });
+                        }
+                        Some(Some(expected_data_type)) => {
+                            // Validate the associated data
+                            validate_type(expected_data_type, data, path, errors, enums, aliases);
+                        }
+                    }
+                }
+                // Wrong value type entirely
+                _ => {
                     errors.push(ValidationError {
                         path: path.to_string(),
                         span: actual.span,
-                        kind: ErrorKind::InvalidEnumVariant {
-                            enum_name: enum_name.clone(),
-                            variant: variant.clone(),
-                            valid: enum_def.variants.iter().cloned().collect(),
+                        kind: ErrorKind::TypeMismatch {
+                            expected: enum_name.clone(),
+                            found: describe(&actual.value),
                         },
                     });
                 }
-            } else {
-                errors.push(ValidationError {
-                    path: path.to_string(),
-                    span: actual.span,
-                    kind: ErrorKind::TypeMismatch {
-                        expected: enum_name.clone(),
-                        found: describe(&actual.value),
-                    },
-                });
             }
         }
 
@@ -911,5 +969,67 @@ mod tests {
         let data = "(pos: (1.0, \"bad\"))";
         let errs = validate_str(schema, data);
         assert_eq!(errs[0].path, "pos.1");
+    }
+
+    // ========================================================
+    // Enum variant with data — validation
+    // ========================================================
+
+    // Valid data variant.
+    #[test]
+    fn enum_data_variant_valid() {
+        let schema = "(\n  effect: Effect,\n)\nenum Effect { Damage(Integer), Draw }";
+        let data = "(effect: Damage(5))";
+        let errs = validate_str(schema, data);
+        assert!(errs.is_empty());
+    }
+
+    // Valid unit variant alongside data variants.
+    #[test]
+    fn enum_unit_variant_valid() {
+        let schema = "(\n  effect: Effect,\n)\nenum Effect { Damage(Integer), Draw }";
+        let data = "(effect: Draw)";
+        let errs = validate_str(schema, data);
+        assert!(errs.is_empty());
+    }
+
+    // Data variant with wrong inner type.
+    #[test]
+    fn enum_data_variant_wrong_type() {
+        let schema = "(\n  effect: Effect,\n)\nenum Effect { Damage(Integer), Draw }";
+        let data = "(effect: Damage(\"five\"))";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::TypeMismatch { expected, .. } if expected == "Integer"));
+    }
+
+    // Unknown variant name with data.
+    #[test]
+    fn enum_data_variant_unknown() {
+        let schema = "(\n  effect: Effect,\n)\nenum Effect { Damage(Integer), Draw }";
+        let data = "(effect: Explode(10))";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::InvalidEnumVariant { .. }));
+    }
+
+    // Bare identifier for a variant that expects data.
+    #[test]
+    fn enum_missing_data() {
+        let schema = "(\n  effect: Effect,\n)\nenum Effect { Damage(Integer), Draw }";
+        let data = "(effect: Damage)";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::InvalidVariantData { .. }));
+    }
+
+    // Data provided for a unit variant.
+    #[test]
+    fn enum_unexpected_data() {
+        let schema = "(\n  effect: Effect,\n)\nenum Effect { Damage(Integer), Draw }";
+        let data = "(effect: Draw(5))";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::InvalidVariantData { .. }));
     }
 }
