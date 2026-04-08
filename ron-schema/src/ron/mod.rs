@@ -25,6 +25,8 @@ pub enum RonValue {
     List(Vec<Spanned<RonValue>>),
     /// A map of key-value pairs (e.g., `{ "str": 5, "dex": 3 }`). Each key and value carries its own span.
     Map(Vec<(Spanned<RonValue>, Spanned<RonValue>)>),
+    /// A positional tuple (e.g., `(1.0, 2.5)`). Each element carries its own span.
+    Tuple(Vec<Spanned<RonValue>>),
     /// A struct with named fields (e.g., `(name: "foo", age: 5)`).
     Struct(RonStruct),
 }

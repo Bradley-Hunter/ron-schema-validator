@@ -22,6 +22,9 @@ fn error_code(kind: &ErrorKind) -> &'static str {
         ErrorKind::ExpectedMap { .. } => "expected-map",
         ErrorKind::InvalidMapKey { .. } => "invalid-map-key",
         ErrorKind::InvalidMapValue { .. } => "invalid-map-value",
+        ErrorKind::ExpectedTuple { .. } => "expected-tuple",
+        ErrorKind::TupleLengthMismatch { .. } => "tuple-length",
+        ErrorKind::InvalidTupleElement { .. } => "invalid-tuple-element",
     }
 }
 
@@ -67,6 +70,15 @@ fn error_message(error: &ValidationError) -> String {
         ErrorKind::InvalidMapValue { key, expected, found } => {
             format!("field `{}`[{}]: expected {}, found {}", error.path, key, expected, found)
         }
+        ErrorKind::ExpectedTuple { found } => {
+            format!("field `{}`: expected tuple, found {}", error.path, found)
+        }
+        ErrorKind::TupleLengthMismatch { expected, found } => {
+            format!("field `{}`: expected {} elements, found {}", error.path, expected, found)
+        }
+        ErrorKind::InvalidTupleElement { index, expected, found } => {
+            format!("field `{}`: element {} expected {}, found {}", error.path, index, expected, found)
+        }
     }
 }
 
@@ -89,6 +101,9 @@ fn underline_label(kind: &ErrorKind) -> String {
         ErrorKind::ExpectedMap { .. } => "expected map".to_string(),
         ErrorKind::InvalidMapKey { expected, .. } => format!("expected {expected}"),
         ErrorKind::InvalidMapValue { expected, .. } => format!("expected {expected}"),
+        ErrorKind::ExpectedTuple { .. } => "expected tuple".to_string(),
+        ErrorKind::TupleLengthMismatch { expected, .. } => format!("expected {expected} elements"),
+        ErrorKind::InvalidTupleElement { expected, .. } => format!("expected {expected}"),
     }
 }
 

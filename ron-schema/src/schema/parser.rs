@@ -131,6 +131,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn parse_type(&mut self) -> Result<Spanned<SchemaType>, SchemaParseError> {
         self.skip_whitespace();
         let start = self.position();
@@ -179,12 +180,53 @@ impl<'a> Parser<'a> {
                 })
             }
             Some(b'(') => {
-                let struct_def = self.parse_struct()?;
-                let end = self.position();
-                Ok(Spanned {
-                    value: SchemaType::Struct(struct_def),
-                    span: Span { start, end },
-                })
+                // Disambiguate struct vs tuple:
+                // Save position, consume '(', skip whitespace.
+                // If ')' → empty struct. If identifier followed by ':' → struct.
+                // Otherwise → tuple (comma-separated types).
+                let saved = (self.offset, self.line, self.column);
+                self.advance(); // consume '('
+                self.skip_whitespace();
+
+                let is_struct = if self.peek() == Some(b')') {
+                    true // empty parens → treat as empty struct
+                } else {
+                    // Try to determine if this is name: Type (struct) or Type, Type (tuple)
+                    let probe_pos = (self.offset, self.line, self.column);
+                    let is_field = if let Ok(_id) = self.parse_identifier() {
+                        self.skip_whitespace();
+                        
+                        self.peek() == Some(b':')
+                    } else {
+                        false
+                    };
+                    // Rewind to after '('
+                    self.offset = probe_pos.0;
+                    self.line = probe_pos.1;
+                    self.column = probe_pos.2;
+                    is_field
+                };
+
+                // Rewind to before '(' and parse as struct or tuple
+                self.offset = saved.0;
+                self.line = saved.1;
+                self.column = saved.2;
+
+                if is_struct {
+                    let struct_def = self.parse_struct()?;
+                    let end = self.position();
+                    Ok(Spanned {
+                        value: SchemaType::Struct(struct_def),
+                        span: Span { start, end },
+                    })
+                } else {
+                    let types = self.parse_tuple_type()?;
+                    let end = self.position();
+                    Ok(Spanned {
+                        value: SchemaType::Tuple(types),
+                        span: Span { start, end },
+                    })
+                }
             }
             Some(b) if b.is_ascii_alphabetic() => {
                 // Identifier: could be primitive, Option, or EnumRef
@@ -273,6 +315,27 @@ impl<'a> Parser<'a> {
         }
         self.expect_char(b')')?;
         Ok(StructDef { fields })
+    }
+
+    /// Parses `(Type, Type, ...)` as a tuple type.
+    fn parse_tuple_type(&mut self) -> Result<Vec<SchemaType>, SchemaParseError> {
+        self.skip_whitespace();
+        self.expect_char(b'(')?;
+        let mut types = Vec::new();
+        loop {
+            self.skip_whitespace();
+            if self.peek() == Some(b')') {
+                break;
+            }
+            let t = self.parse_type()?;
+            types.push(t.value);
+            self.skip_whitespace();
+            if self.peek() == Some(b',') {
+                self.advance();
+            }
+        }
+        self.expect_char(b')')?;
+        Ok(types)
     }
 
     fn parse_enum_def(&mut self) -> Result<EnumDef, SchemaParseError> {
@@ -444,6 +507,11 @@ fn reclassify_refs_in_type_by_name(
             reclassify_refs_in_type_by_name(key, alias_names);
             reclassify_refs_in_type_by_name(value, alias_names);
         }
+        SchemaType::Tuple(types) => {
+            for t in types {
+                reclassify_refs_in_type_by_name(t, alias_names);
+            }
+        }
         SchemaType::Struct(struct_def) => {
             reclassify_refs_in_struct_by_name(struct_def, alias_names);
         }
@@ -494,6 +562,11 @@ fn check_type_refs(
             check_type_refs(key, span, enums, aliases)?;
             check_type_refs(value, span, enums, aliases)?;
         }
+        SchemaType::Tuple(types) => {
+            for t in types {
+                check_type_refs(t, span, enums, aliases)?;
+            }
+        }
         SchemaType::Struct(struct_def) => {
             verify_refs(struct_def, enums, aliases)?;
         }
@@ -543,6 +616,14 @@ fn find_alias_cycle<'a>(
                 return Some(cycle);
             }
             find_alias_cycle(value, aliases, visited)
+        }
+        SchemaType::Tuple(types) => {
+            for t in types {
+                if let Some(cycle) = find_alias_cycle(t, aliases, visited) {
+                    return Some(cycle);
+                }
+            }
+            None
         }
         SchemaType::Struct(struct_def) => {
             for field in &struct_def.fields {
@@ -1233,5 +1314,59 @@ mod tests {
         let source = "(\n  bad: {Bool: String},\n)";
         let err = parse_schema(source).unwrap_err();
         assert!(matches!(err.kind, SchemaErrorKind::InvalidMapKeyType { .. }));
+    }
+
+    // ========================================================
+    // Tuple type tests — parsing
+    // ========================================================
+
+    // Parses a tuple type with two elements.
+    #[test]
+    fn parse_type_tuple() {
+        let mut p = parser("(Float, Float)");
+        let t = p.parse_type().unwrap();
+        assert_eq!(t.value, SchemaType::Tuple(vec![SchemaType::Float, SchemaType::Float]));
+    }
+
+    // Parses a tuple type with mixed types.
+    #[test]
+    fn parse_type_tuple_mixed() {
+        let mut p = parser("(String, Integer, Bool)");
+        let t = p.parse_type().unwrap();
+        assert_eq!(
+            t.value,
+            SchemaType::Tuple(vec![SchemaType::String, SchemaType::Integer, SchemaType::Bool])
+        );
+    }
+
+    // Tuple type in a schema field.
+    #[test]
+    fn schema_tuple_field() {
+        let source = "(\n  pos: (Float, Float),\n)";
+        let schema = parse_schema(source).unwrap();
+        assert_eq!(
+            schema.root.fields[0].type_.value,
+            SchemaType::Tuple(vec![SchemaType::Float, SchemaType::Float])
+        );
+    }
+
+    // Inline struct still works after tuple disambiguation.
+    #[test]
+    fn schema_struct_still_works() {
+        let source = "(\n  cost: (generic: Integer,),\n)";
+        let schema = parse_schema(source).unwrap();
+        if let SchemaType::Struct(s) = &schema.root.fields[0].type_.value {
+            assert_eq!(s.fields[0].name.value, "generic");
+        } else {
+            panic!("expected Struct");
+        }
+    }
+
+    // Empty parens still parse as empty struct.
+    #[test]
+    fn schema_empty_parens_is_struct() {
+        let source = "(\n  empty: (),\n)";
+        let schema = parse_schema(source).unwrap();
+        assert!(matches!(schema.root.fields[0].type_.value, SchemaType::Struct(_)));
     }
 }

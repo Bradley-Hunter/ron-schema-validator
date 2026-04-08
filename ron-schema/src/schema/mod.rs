@@ -39,6 +39,8 @@ pub enum SchemaType {
     AliasRef(String),
     /// A map with typed keys and values — matches `{ key: value, ... }`.
     Map(Box<SchemaType>, Box<SchemaType>),
+    /// A positional tuple — matches `(value1, value2, ...)`.
+    Tuple(Vec<SchemaType>),
     /// An inline nested struct — matches `(field: value, ...)`.
     Struct(StructDef),
 }

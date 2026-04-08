@@ -311,39 +311,90 @@ impl<'a> Parser<'a> {
             },
             Some(b'(') => {
                 self.advance();
-                let mut fields: Vec<(Spanned<String>, Spanned<RonValue>)> = Vec::new();
-                loop {
+                self.skip_whitespace();
+
+                // Empty parens → empty struct
+                if self.peek() == Some(b')') {
+                    let close_span_start = self.position();
+                    self.expect_char(b')')?;
+                    let close_span = Span { start: close_span_start, end: self.position() };
+                    return Ok(Spanned {
+                        value: RonValue::Struct(RonStruct { fields: Vec::new(), close_span }),
+                        span: Span { start, end: self.position() },
+                    });
+                }
+
+                // Disambiguate struct vs tuple by probing for identifier followed by ':'
+                let probe = (self.offset, self.line, self.column);
+                let is_struct = if let Ok(_id) = self.parse_identifier() {
                     self.skip_whitespace();
-                    if let Some(b')') = self.peek() {
-                        break;
-                    }
-                    let field = self.parse_identifier()?;
-                    self.skip_whitespace();
-                    self.expect_char(b':')?;
-                    self.skip_whitespace();
-                    let value = self.parse_value()?;
-                    fields.push((field, value));
-                    self.skip_whitespace();
-                    match self.peek() {
-                        Some(b',') => self.advance(),
-                        Some(_) => {}
-                        None => {
-                            return Err(RonParseError { 
-                                span: Span { start, end: self.position() } , 
-                                kind: RonErrorKind::UnexpectedToken { 
-                                    expected: "character".to_string(), 
-                                    found: "end of file".to_string() } 
+                    
+                    self.peek() == Some(b':')
+                } else {
+                    false
+                };
+                // Rewind to after '('
+                self.offset = probe.0;
+                self.line = probe.1;
+                self.column = probe.2;
+
+                if is_struct {
+                    // Parse as struct
+                    let mut fields: Vec<(Spanned<String>, Spanned<RonValue>)> = Vec::new();
+                    loop {
+                        self.skip_whitespace();
+                        if let Some(b')') = self.peek() {
+                            break;
+                        }
+                        let field = self.parse_identifier()?;
+                        self.skip_whitespace();
+                        self.expect_char(b':')?;
+                        self.skip_whitespace();
+                        let value = self.parse_value()?;
+                        fields.push((field, value));
+                        self.skip_whitespace();
+                        match self.peek() {
+                            Some(b',') => self.advance(),
+                            Some(_) => {}
+                            None => {
+                                return Err(RonParseError {
+                                    span: Span { start, end: self.position() },
+                                    kind: RonErrorKind::UnexpectedToken {
+                                        expected: "character".to_string(),
+                                        found: "end of file".to_string(),
+                                    },
                                 });
+                            }
                         }
                     }
+                    let close_span_start = self.position();
+                    self.expect_char(b')')?;
+                    let close_span = Span { start: close_span_start, end: self.position() };
+                    Ok(Spanned {
+                        value: RonValue::Struct(RonStruct { fields, close_span }),
+                        span: Span { start, end: self.position() },
+                    })
+                } else {
+                    // Parse as tuple
+                    let mut elements = Vec::new();
+                    loop {
+                        self.skip_whitespace();
+                        if self.peek() == Some(b')') {
+                            break;
+                        }
+                        let value = self.parse_value()?;
+                        elements.push(value);
+                        self.skip_whitespace();
+                        if self.peek() == Some(b',') {
+                            self.advance();
+                        }
+                    }
+                    self.expect_char(b')')?;
+                    Ok(Spanned {
+                        value: RonValue::Tuple(elements),
+                        span: Span { start, end: self.position() },
+                    })
                 }
-                let close_span_start = self.position();
-                self.expect_char(b')')?;
-                let close_span = Span{ start: close_span_start, end: self.position() };
-                Ok(Spanned { 
-                    value: RonValue::Struct(RonStruct { fields, close_span }), 
-                    span: Span { start, end: self.position() } 
-                })
             }
             Some(b) => {
                 self.advance();
@@ -882,6 +933,71 @@ mod tests {
             assert_eq!(entries.len(), 1);
         } else {
             panic!("expected Map");
+        }
+    }
+
+    // ========================================================
+    // parse_value() — tuple parsing
+    // ========================================================
+
+    // Parses a tuple with two elements.
+    #[test]
+    fn tuple_two_elements() {
+        let mut p = parser("(1.0, 2.5)");
+        let v = p.parse_value().unwrap();
+        if let RonValue::Tuple(elems) = &v.value {
+            assert_eq!(elems.len(), 2);
+            assert_eq!(elems[0].value, RonValue::Float(1.0));
+            assert_eq!(elems[1].value, RonValue::Float(2.5));
+        } else {
+            panic!("expected Tuple, got {:?}", v.value);
+        }
+    }
+
+    // Parses a tuple with mixed types.
+    #[test]
+    fn tuple_mixed_types() {
+        let mut p = parser("(\"hello\", 42, true)");
+        let v = p.parse_value().unwrap();
+        if let RonValue::Tuple(elems) = &v.value {
+            assert_eq!(elems.len(), 3);
+            assert_eq!(elems[0].value, RonValue::String("hello".to_string()));
+            assert_eq!(elems[1].value, RonValue::Integer(42));
+            assert_eq!(elems[2].value, RonValue::Bool(true));
+        } else {
+            panic!("expected Tuple, got {:?}", v.value);
+        }
+    }
+
+    // Struct still parses correctly after tuple disambiguation.
+    #[test]
+    fn struct_still_parses() {
+        let mut p = parser("(name: \"foo\", age: 5)");
+        let v = p.parse_value().unwrap();
+        if let RonValue::Struct(s) = &v.value {
+            assert_eq!(s.fields.len(), 2);
+        } else {
+            panic!("expected Struct, got {:?}", v.value);
+        }
+    }
+
+    // Empty parens parse as empty struct.
+    #[test]
+    fn empty_parens_is_struct() {
+        let mut p = parser("()");
+        let v = p.parse_value().unwrap();
+        assert!(matches!(v.value, RonValue::Struct(_)));
+    }
+
+    // Single-element tuple with trailing comma.
+    #[test]
+    fn tuple_single_element_trailing_comma() {
+        let mut p = parser("(42,)");
+        let v = p.parse_value().unwrap();
+        if let RonValue::Tuple(elems) = &v.value {
+            assert_eq!(elems.len(), 1);
+        } else {
+            panic!("expected Tuple, got {:?}", v.value);
         }
     }
 }

@@ -52,8 +52,11 @@ A matching `.ron` data file:
 | `Bool` | Boolean literals | `true`, `false` |
 | `Option(T)` | `Some(value)` or `None` | `Some(5)`, `None` |
 | `[T]` | Homogeneous list | `[1, 2, 3]` |
+| `{K: V}` | Map with typed keys and values | `{"str": 5, "dex": 3}` |
+| `(T1, T2, ...)` | Positional tuple | `(1.0, 2.5)` |
 | Inline struct | Nested `(...)` with named fields | See example above |
 | Enum reference | Bare identifier from a defined enum | `Creature` |
+| Type alias | Named type via `type Name = T` | See below |
 
 ### Enums
 
@@ -65,6 +68,29 @@ Define enums after the root struct. Variants are bare identifiers (not strings):
 )
 
 enum Status { Active, Inactive, Pending }
+```
+
+### Type Aliases
+
+Define reusable types with `type Name = T`:
+
+```
+(
+  cost: Cost,
+  backup_cost: Cost,
+)
+
+type Cost = (generic: Integer, sigil: Integer,)
+```
+
+### Maps
+
+Map types use `{KeyType: ValueType}`. Keys must be `String`, `Integer`, or an enum type:
+
+```
+(
+  attributes: {String: Integer},
+)
 ```
 
 ## CLI Usage
@@ -140,15 +166,34 @@ Requires Rust 2021 edition.
 - [X] CLI wiring (file I/O, error rendering, batch mode)
 - [X] Test coverage for all error kinds
 
+### v0.2 — Type Aliases
+
+- [x] `type Name = T` definitions
+- [x] Recursive alias detection
+- [x] Alias resolution during validation
+
+### v0.3 — Map Types
+
+- [x] `{K: V}` schema syntax
+- [x] `{ key: value, ... }` RON parsing
+- [x] Map key/value validation
+- [x] Key type restriction (String, Integer, enum)
+
+### v0.4 — Tuple Types
+
+- [x] `(T1, T2, ...)` schema syntax
+- [x] Tuple parsing in RON data with struct/tuple disambiguation
+- [x] Tuple length and element type validation
+
 ### Future (v1.0+)
 
-- [ ] Type aliases (`type Cost = (...)`)
 - [ ] Enum variants with associated data
-- [ ] Tuple structs
-- [ ] Map types (`{K: V}`)
 - [ ] Schema composition / imports
 - [ ] Custom validation rules (value ranges, string patterns)
 - [ ] Optional field presence (`default` values)
+- [ ] `--format json` output
+- [ ] `init` subcommand (schema inference)
+- [ ] Warnings and `--deny-warnings`
 
 ## Design Decisions
 

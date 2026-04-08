@@ -37,6 +37,7 @@ fn describe(value: &RonValue) -> String {
         RonValue::Identifier(s) => format!("Identifier({s})"),
         RonValue::List(_) => "List".to_string(),
         RonValue::Map(_) => "Map".to_string(),
+        RonValue::Tuple(_) => "Tuple".to_string(),
         RonValue::Struct(_) => "Struct".to_string(),
     }
 }
@@ -197,6 +198,35 @@ fn validate_type(
                     path: path.to_string(),
                     span: actual.span,
                     kind: ErrorKind::ExpectedMap {
+                        found: describe(&actual.value),
+                    },
+                });
+            }
+        }
+
+        // Tuple: check value is a tuple, check element count, validate each element.
+        SchemaType::Tuple(element_types) => {
+            if let RonValue::Tuple(elements) = &actual.value {
+                if elements.len() == element_types.len() {
+                    for (index, (expected_type, element)) in element_types.iter().zip(elements).enumerate() {
+                        let element_path = format!("{path}.{index}");
+                        validate_type(expected_type, element, &element_path, errors, enums, aliases);
+                    }
+                } else {
+                    errors.push(ValidationError {
+                        path: path.to_string(),
+                        span: actual.span,
+                        kind: ErrorKind::TupleLengthMismatch {
+                            expected: element_types.len(),
+                            found: elements.len(),
+                        },
+                    });
+                }
+            } else {
+                errors.push(ValidationError {
+                    path: path.to_string(),
+                    span: actual.span,
+                    kind: ErrorKind::ExpectedTuple {
                         found: describe(&actual.value),
                     },
                 });
@@ -829,5 +859,57 @@ mod tests {
         let errs = validate_str(schema, data);
         assert_eq!(errs.len(), 1);
         assert!(matches!(&errs[0].kind, ErrorKind::TypeMismatch { expected, .. } if expected == "String"));
+    }
+
+    // ========================================================
+    // Tuple validation
+    // ========================================================
+
+    // Valid tuple.
+    #[test]
+    fn tuple_valid() {
+        let schema = "(\n  pos: (Float, Float),\n)";
+        let data = "(pos: (1.0, 2.5))";
+        let errs = validate_str(schema, data);
+        assert!(errs.is_empty());
+    }
+
+    // Non-tuple value where tuple expected.
+    #[test]
+    fn tuple_expected_got_string() {
+        let schema = "(\n  pos: (Float, Float),\n)";
+        let data = "(pos: \"not a tuple\")";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::ExpectedTuple { .. }));
+    }
+
+    // Tuple with wrong element count.
+    #[test]
+    fn tuple_wrong_length() {
+        let schema = "(\n  pos: (Float, Float),\n)";
+        let data = "(pos: (1.0, 2.5, 3.0))";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::TupleLengthMismatch { expected: 2, found: 3 }));
+    }
+
+    // Tuple with wrong element type.
+    #[test]
+    fn tuple_wrong_element_type() {
+        let schema = "(\n  pos: (Float, Float),\n)";
+        let data = "(pos: (1.0, \"bad\"))";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::TypeMismatch { expected, .. } if expected == "Float"));
+    }
+
+    // Tuple element error has correct path.
+    #[test]
+    fn tuple_element_error_path() {
+        let schema = "(\n  pos: (Float, Float),\n)";
+        let data = "(pos: (1.0, \"bad\"))";
+        let errs = validate_str(schema, data);
+        assert_eq!(errs[0].path, "pos.1");
     }
 }

@@ -172,6 +172,27 @@ pub enum ErrorKind {
         /// A description of what was actually found.
         found: String,
     },
+    /// Expected a tuple `(...)` but found a non-tuple value.
+    ExpectedTuple {
+        /// A description of what was actually found.
+        found: String,
+    },
+    /// A tuple has the wrong number of elements.
+    TupleLengthMismatch {
+        /// The number of elements expected by the schema.
+        expected: usize,
+        /// The number of elements found in the data.
+        found: usize,
+    },
+    /// A tuple element has the wrong type.
+    InvalidTupleElement {
+        /// The 0-based index of the offending element.
+        index: usize,
+        /// The type expected by the schema.
+        expected: String,
+        /// A description of what was actually found.
+        found: String,
+    },
 }
 
 /// An error produced when parsing a `.ronschema` file fails.

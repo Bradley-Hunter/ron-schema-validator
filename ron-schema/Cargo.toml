@@ -1,6 +1,6 @@
 [package]
 name = "ron-schema"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Schema definition and validation for RON (Rusty Object Notation) files"
 license = "MIT"
