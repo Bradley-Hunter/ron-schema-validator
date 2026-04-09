@@ -300,7 +300,7 @@ fn collect_ron_files(dir: &PathBuf) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 files.extend(collect_ron_files(&path));
-            } else if path.extension().map_or(false, |ext| ext == "ron") {
+            } else if path.extension().is_some_and(|ext| ext == "ron") {
                 files.push(path);
             }
         }
