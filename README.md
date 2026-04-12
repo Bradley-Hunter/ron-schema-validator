@@ -4,7 +4,7 @@ Schema validation for [RON (Rusty Object Notation)](https://github.com/ron-rs/ro
 
 RON has no equivalent of JSON Schema. This project fills that gap.
 
-> **Status:** v0.1 MVP complete. Schema parser, RON parser, validator, and CLI are all functional with test coverage.
+> **Status:** v0.6 — Schema parser, RON parser, validator, and CLI are all functional with test coverage. JSON output format available.
 
 ## Schema Format
 
@@ -107,6 +107,25 @@ Pass a directory as the target to validate all `.ron` files within it:
 ron-schema validate --schema card.ronschema cards/
 ```
 
+Use `--format json` for machine-readable output:
+
+```
+ron-schema validate --schema config.ronschema data/ --format json
+```
+
+```json
+{
+  "success": true,
+  "results": [
+    {
+      "file": "data/config.ron",
+      "errors": [],
+      "warnings": []
+    }
+  ]
+}
+```
+
 ## Library Usage
 
 The library crate (`ron-schema`) operates on `&str` — no file I/O, no formatting opinions.
@@ -193,13 +212,18 @@ Requires Rust 2021 edition.
 - [x] `Variant(value)` RON parsing
 - [x] Unit vs data variant validation
 
-### Future (v1.0+)
+### v0.6 — JSON Output
+
+- [x] `--format json` for machine-readable output
+- [x] Structured error objects with code, severity, path, message, span
+- [x] Schema parse errors surfaced in JSON with `success: false`
+
+### Future
+- [ ] Optional field presence (`default` values)
+- [ ] Warnings and `--deny-warnings`
 - [ ] Schema composition / imports
 - [ ] Custom validation rules (value ranges, string patterns)
-- [ ] Optional field presence (`default` values)
-- [ ] `--format json` output
 - [ ] `init` subcommand (schema inference)
-- [ ] Warnings and `--deny-warnings`
 
 ## Design Decisions
 

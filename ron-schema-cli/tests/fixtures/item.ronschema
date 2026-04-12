@@ -1,0 +1,11 @@
+(
+  name: String,
+  count: Integer,
+  weight: Float,
+  active: Bool,
+  label: Option(String),
+  tags: [String],
+  category: Category,
+)
+
+enum Category { Weapon, Armor, Consumable }

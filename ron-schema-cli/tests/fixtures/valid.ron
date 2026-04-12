@@ -1,0 +1,9 @@
+(
+  name: "Iron Sword",
+  count: 1,
+  weight: 2.5,
+  active: true,
+  label: Some("starter"),
+  tags: ["melee", "basic"],
+  category: Weapon,
+)
