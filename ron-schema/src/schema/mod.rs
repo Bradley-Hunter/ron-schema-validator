@@ -8,6 +8,7 @@ pub mod parser;
 use std::collections::{HashMap, HashSet};
 
 use crate::Spanned;
+use crate::ron::RonValue;
 
 /// A named enum with a closed set of variants, optionally carrying associated data.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +54,8 @@ pub struct FieldDef {
     pub name: Spanned<String>,
     /// The expected type for this field's value, with source location.
     pub type_: Spanned<SchemaType>,
+    /// An optional default value. Fields with defaults are not required in data.
+    pub default: Option<Spanned<RonValue>>,
 }
 
 /// A struct definition containing an ordered list of field definitions.

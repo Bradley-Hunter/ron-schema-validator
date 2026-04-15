@@ -347,9 +347,9 @@ fn validate_struct(
         .map(|f| f.name.value.as_str())
         .collect();
 
-    // 1. Missing fields: in schema but not in data
+    // 1. Missing fields: in schema but not in data (skip fields with defaults)
     for field_def in &struct_def.fields {
-        if !data_map.contains_key(field_def.name.value.as_str()) {
+        if !data_map.contains_key(field_def.name.value.as_str()) && field_def.default.is_none() {
             errors.push(ValidationError {
                 path: build_path(path, &field_def.name.value),
                 span: data_struct.close_span,
@@ -610,6 +610,64 @@ mod tests {
     fn missing_fields_all_reported() {
         let errs = validate_str("(\n  a: String,\n  b: Integer,\n  c: Bool,\n)", "()");
         assert_eq!(errs.len(), 3);
+    }
+
+    // ========================================================
+    // Default values — fields with defaults are optional
+    // ========================================================
+
+    // Field with default does not produce MissingField when absent.
+    #[test]
+    fn default_field_not_required() {
+        let errs = validate_str("(\n  name: String,\n  label: String = \"none\",\n)", "(name: \"hi\")");
+        assert!(errs.is_empty());
+    }
+
+    // Field with default still validates type when present.
+    #[test]
+    fn default_field_still_validates_type() {
+        let errs = validate_str("(\n  name: String,\n  label: String = \"none\",\n)", "(name: \"hi\", label: 42)");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::TypeMismatch { .. }));
+    }
+
+    // Field with default accepts correct type when present.
+    #[test]
+    fn default_field_accepts_correct_type() {
+        let errs = validate_str("(\n  name: String,\n  label: String = \"none\",\n)", "(name: \"hi\", label: \"custom\")");
+        assert!(errs.is_empty());
+    }
+
+    // Field without default still produces MissingField.
+    #[test]
+    fn non_default_field_still_required() {
+        let errs = validate_str("(\n  name: String,\n  label: String = \"none\",\n)", "(label: \"hi\")");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::MissingField { field_name } if field_name == "name"));
+    }
+
+    // Multiple fields with defaults can all be absent.
+    #[test]
+    fn multiple_default_fields_all_absent() {
+        let errs = validate_str(
+            "(\n  name: String,\n  a: Integer = 0,\n  b: Bool = false,\n  c: String = \"x\",\n)",
+            "(name: \"hi\")",
+        );
+        assert!(errs.is_empty());
+    }
+
+    // Default on Option field allows absence.
+    #[test]
+    fn default_option_field_not_required() {
+        let errs = validate_str("(\n  name: String,\n  tag: Option(String) = None,\n)", "(name: \"hi\")");
+        assert!(errs.is_empty());
+    }
+
+    // Default on list field allows absence.
+    #[test]
+    fn default_list_field_not_required() {
+        let errs = validate_str("(\n  name: String,\n  tags: [String] = [],\n)", "(name: \"hi\")");
+        assert!(errs.is_empty());
     }
 
     // ========================================================

@@ -56,6 +56,15 @@ pub enum SchemaErrorKind {
         /// A description of the invalid key type.
         found: String,
     },
+    /// A default value does not match the field's declared type.
+    InvalidDefault {
+        /// The field name.
+        field_name: String,
+        /// The type expected by the schema.
+        expected: String,
+        /// A description of the default value.
+        found: String,
+    },
     /// A syntax error — the parser encountered a token it did not expect.
     UnexpectedToken {
         /// What the parser expected at this position.

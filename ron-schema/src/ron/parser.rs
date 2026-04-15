@@ -7,7 +7,7 @@ use crate::error::{RonErrorKind, RonParseError};
 use super::{RonValue, RonStruct};
 
 #[derive(Debug)]
-struct Parser<'a> {
+pub(crate) struct Parser<'a> {
     source: &'a str,
     bytes: &'a [u8],
     offset: usize,
@@ -18,6 +18,22 @@ struct Parser<'a> {
 impl<'a> Parser<'a> {
     fn new(source: &'a str) -> Self {
         Self { source, bytes: source.as_bytes(), offset: 0, line: 1, column: 1 }
+    }
+
+    /// Creates a parser starting at the given offset and position within `source`.
+    /// Used by the schema parser to parse inline default values.
+    pub(crate) fn new_at(source: &'a str, offset: usize, position: Position) -> Self {
+        Self { source, bytes: source.as_bytes(), offset, line: position.line, column: position.column }
+    }
+
+    /// Returns the current byte offset into the source string.
+    pub(crate) fn current_offset(&self) -> usize {
+        self.offset
+    }
+
+    /// Parses a single value at the current position. Exposed for the schema parser.
+    pub(crate) fn parse_single_value(&mut self) -> Result<Spanned<RonValue>, RonParseError> {
+        self.parse_value()
     }
 
     fn position(&self) -> Position {

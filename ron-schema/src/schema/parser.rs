@@ -4,6 +4,8 @@
 
 use crate::span::{Position, Span, Spanned};
 use crate::error::{SchemaParseError, SchemaErrorKind};
+use crate::ron::RonValue;
+use crate::ron::parser::Parser as RonParser;
 use super::{SchemaType, FieldDef, StructDef, EnumDef, HashSet, Schema, HashMap};
 
 #[derive(Debug)]
@@ -284,9 +286,40 @@ impl<'a> Parser<'a> {
         self.expect_char(b':')?;
         self.skip_whitespace();
         let type_ = self.parse_type()?;
+        self.skip_whitespace();
+
+        // Parse optional default value: `= <value>`
+        let default = if self.peek() == Some(b'=') {
+            self.advance(); // skip '='
+            self.skip_whitespace();
+            let mut ron_parser = RonParser::new_at(
+                self.source,
+                self.offset,
+                self.position(),
+            );
+            let value = ron_parser.parse_single_value().map_err(|e| {
+                SchemaParseError {
+                    span: e.span,
+                    kind: SchemaErrorKind::UnexpectedToken {
+                        expected: "default value".to_string(),
+                        found: format!("{:?}", e.kind),
+                    },
+                }
+            })?;
+            // Advance the schema parser past the value the RON parser consumed
+            let bytes_consumed = ron_parser.current_offset() - self.offset;
+            for _ in 0..bytes_consumed {
+                self.advance();
+            }
+            Some(value)
+        } else {
+            None
+        };
+
         Ok(FieldDef{
             name,
-            type_
+            type_,
+            default,
         })
     }
 
@@ -490,6 +523,9 @@ pub fn parse_schema(source: &str) -> Result<Schema, SchemaParseError> {
     // Check for recursive aliases
     verify_no_recursive_aliases(&aliases)?;
 
+    // Verify default values match their declared types
+    verify_defaults(&root, &enums, &aliases)?;
+
     Ok(Schema { root, enums, aliases })
 }
 
@@ -649,9 +685,132 @@ fn find_alias_cycle<'a>(
     }
 }
 
+/// Resolves a `SchemaType` through alias indirection to its underlying type.
+fn resolve_type<'a>(
+    schema_type: &'a SchemaType,
+    aliases: &'a HashMap<String, Spanned<SchemaType>>,
+) -> &'a SchemaType {
+    match schema_type {
+        SchemaType::AliasRef(name) => {
+            if let Some(target) = aliases.get(name) {
+                resolve_type(&target.value, aliases)
+            } else {
+                schema_type
+            }
+        }
+        _ => schema_type,
+    }
+}
+
+/// Checks whether a default value is compatible with a schema type.
+/// Returns `true` if the value matches the type.
+#[allow(clippy::match_same_arms)]
+fn default_matches_type(
+    value: &RonValue,
+    schema_type: &SchemaType,
+    enums: &HashMap<String, EnumDef>,
+    aliases: &HashMap<String, Spanned<SchemaType>>,
+) -> bool {
+    let resolved = resolve_type(schema_type, aliases);
+    match (resolved, value) {
+        (SchemaType::String, RonValue::String(_)) => true,
+        (SchemaType::Integer, RonValue::Integer(_)) => true,
+        (SchemaType::Float, RonValue::Float(_)) => true,
+        (SchemaType::Bool, RonValue::Bool(_)) => true,
+        (SchemaType::Option(_), RonValue::Option(None)) => true,
+        (SchemaType::Option(inner), RonValue::Option(Some(inner_val))) => {
+            default_matches_type(&inner_val.value, inner, enums, aliases)
+        }
+        (SchemaType::List(elem_type), RonValue::List(elements)) => {
+            elements.iter().all(|e| default_matches_type(&e.value, elem_type, enums, aliases))
+        }
+        (SchemaType::EnumRef(enum_name), RonValue::Identifier(variant)) => {
+            enums.get(enum_name).is_some_and(|e| e.variants.contains_key(variant))
+        }
+        (SchemaType::EnumRef(enum_name), RonValue::EnumVariant(variant, data)) => {
+            enums.get(enum_name).is_some_and(|e| {
+                matches!(e.variants.get(variant), Some(Some(data_type)) if default_matches_type(&data.value, data_type, enums, aliases))
+            })
+        }
+        (SchemaType::Tuple(types), RonValue::Tuple(values)) => {
+            types.len() == values.len()
+                && types.iter().zip(values.iter()).all(|(t, v)| default_matches_type(&v.value, t, enums, aliases))
+        }
+        (SchemaType::Map(_, _), RonValue::Map(_)) => true, // map default type checking is impractical at parse time
+        _ => false,
+    }
+}
+
+/// Describes a schema type for error messages.
+fn describe_type(schema_type: &SchemaType) -> String {
+    match schema_type {
+        SchemaType::String => "String".to_string(),
+        SchemaType::Integer => "Integer".to_string(),
+        SchemaType::Float => "Float".to_string(),
+        SchemaType::Bool => "Bool".to_string(),
+        SchemaType::Option(inner) => format!("Option({})", describe_type(inner)),
+        SchemaType::List(inner) => format!("[{}]", describe_type(inner)),
+        SchemaType::EnumRef(name) | SchemaType::AliasRef(name) => name.clone(),
+        SchemaType::Map(k, v) => format!("{{{}: {}}}", describe_type(k), describe_type(v)),
+        SchemaType::Tuple(types) => {
+            let inner: Vec<String> = types.iter().map(describe_type).collect();
+            format!("({})", inner.join(", "))
+        }
+        SchemaType::Struct(_) => "Struct".to_string(),
+    }
+}
+
+/// Describes a RON value for error messages.
+fn describe_value(value: &RonValue) -> String {
+    match value {
+        RonValue::String(s) => format!("String(\"{s}\")"),
+        RonValue::Integer(n) => format!("Integer({n})"),
+        RonValue::Float(f) => format!("Float({f})"),
+        RonValue::Bool(b) => format!("Bool({b})"),
+        RonValue::Option(None) => "None".to_string(),
+        RonValue::Option(Some(_)) => "Some(...)".to_string(),
+        RonValue::Identifier(s) => format!("Identifier({s})"),
+        RonValue::EnumVariant(name, _) => format!("{name}(...)"),
+        RonValue::List(_) => "List".to_string(),
+        RonValue::Map(_) => "Map".to_string(),
+        RonValue::Tuple(_) => "Tuple".to_string(),
+        RonValue::Struct(_) => "Struct".to_string(),
+    }
+}
+
+/// Verifies that all default values in a struct match their declared types.
+fn verify_defaults(
+    struct_def: &StructDef,
+    enums: &HashMap<String, EnumDef>,
+    aliases: &HashMap<String, Spanned<SchemaType>>,
+) -> Result<(), SchemaParseError> {
+    for field in &struct_def.fields {
+        if let Some(default) = &field.default {
+            if !default_matches_type(&default.value, &field.type_.value, enums, aliases) {
+                return Err(SchemaParseError {
+                    span: default.span,
+                    kind: SchemaErrorKind::InvalidDefault {
+                        field_name: field.name.value.clone(),
+                        expected: describe_type(&field.type_.value),
+                        found: describe_value(&default.value),
+                    },
+                });
+            }
+        }
+    }
+    // Check nested structs
+    for field in &struct_def.fields {
+        if let SchemaType::Struct(inner) = &field.type_.value {
+            verify_defaults(inner, enums, aliases)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ron::RonValue;
 
     // ========================================================
     // Helper: constructs a Parser for direct method testing
@@ -991,6 +1150,242 @@ mod tests {
         let mut p = parser("name String");
         let err = p.parse_field().unwrap_err();
         assert!(matches!(err.kind, SchemaErrorKind::UnexpectedToken { .. }));
+    }
+
+    // Field without default has None.
+    #[test]
+    fn parse_field_no_default() {
+        let mut p = parser("name: String,");
+        let f = p.parse_field().unwrap();
+        assert!(f.default.is_none());
+    }
+
+    // Field with string default.
+    #[test]
+    fn parse_field_default_string() {
+        let mut p = parser("name: String = \"unnamed\",");
+        let f = p.parse_field().unwrap();
+        assert!(f.default.is_some());
+        assert_eq!(f.default.unwrap().value, RonValue::String("unnamed".to_string()));
+    }
+
+    // Field with integer default.
+    #[test]
+    fn parse_field_default_integer() {
+        let mut p = parser("count: Integer = 0,");
+        let f = p.parse_field().unwrap();
+        assert_eq!(f.default.unwrap().value, RonValue::Integer(0));
+    }
+
+    // Field with float default.
+    #[test]
+    fn parse_field_default_float() {
+        let mut p = parser("weight: Float = 1.0,");
+        let f = p.parse_field().unwrap();
+        assert_eq!(f.default.unwrap().value, RonValue::Float(1.0));
+    }
+
+    // Field with bool default.
+    #[test]
+    fn parse_field_default_bool() {
+        let mut p = parser("active: Bool = false,");
+        let f = p.parse_field().unwrap();
+        assert_eq!(f.default.unwrap().value, RonValue::Bool(false));
+    }
+
+    // Field with None default.
+    #[test]
+    fn parse_field_default_none() {
+        let mut p = parser("label: Option(String) = None,");
+        let f = p.parse_field().unwrap();
+        assert_eq!(f.default.unwrap().value, RonValue::Option(None));
+    }
+
+    // Field with Some default.
+    #[test]
+    fn parse_field_default_some() {
+        let mut p = parser("label: Option(String) = Some(\"default\"),");
+        let f = p.parse_field().unwrap();
+        if let RonValue::Option(Some(inner)) = &f.default.unwrap().value {
+            assert_eq!(inner.value, RonValue::String("default".to_string()));
+        } else {
+            panic!("expected Option(Some(...))");
+        }
+    }
+
+    // Field with empty list default.
+    #[test]
+    fn parse_field_default_empty_list() {
+        let mut p = parser("tags: [String] = [],");
+        let f = p.parse_field().unwrap();
+        assert_eq!(f.default.unwrap().value, RonValue::List(vec![]));
+    }
+
+    // Field with identifier default.
+    #[test]
+    fn parse_field_default_identifier() {
+        let mut p = parser("status: Status = Active,");
+        let f = p.parse_field().unwrap();
+        assert_eq!(f.default.unwrap().value, RonValue::Identifier("Active".to_string()));
+    }
+
+    // Default value has correct span.
+    #[test]
+    fn parse_field_default_has_span() {
+        let mut p = parser("name: String = \"hi\",");
+        let f = p.parse_field().unwrap();
+        let default = f.default.unwrap();
+        assert!(default.span.start.column > 1);
+    }
+
+    // ========================================================
+    // Default value type checking (parse_schema level)
+    // ========================================================
+
+    // String default matches String type.
+    #[test]
+    fn default_type_check_string_accepts_string() {
+        let result = parse_schema("(\n  name: String = \"hi\",\n)");
+        assert!(result.is_ok());
+    }
+
+    // Integer default rejected for String type.
+    #[test]
+    fn default_type_check_string_rejects_integer() {
+        let err = parse_schema("(\n  name: String = 42,\n)").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::InvalidDefault { field_name, .. } if field_name == "name"));
+    }
+
+    // Integer default matches Integer type.
+    #[test]
+    fn default_type_check_integer_accepts_integer() {
+        assert!(parse_schema("(\n  count: Integer = 0,\n)").is_ok());
+    }
+
+    // String default rejected for Integer type.
+    #[test]
+    fn default_type_check_integer_rejects_string() {
+        let err = parse_schema("(\n  count: Integer = \"zero\",\n)").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::InvalidDefault { .. }));
+    }
+
+    // Float default matches Float type.
+    #[test]
+    fn default_type_check_float_accepts_float() {
+        assert!(parse_schema("(\n  weight: Float = 1.0,\n)").is_ok());
+    }
+
+    // Integer default rejected for Float type.
+    #[test]
+    fn default_type_check_float_rejects_integer() {
+        let err = parse_schema("(\n  weight: Float = 1,\n)").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::InvalidDefault { .. }));
+    }
+
+    // Bool default matches Bool type.
+    #[test]
+    fn default_type_check_bool_accepts_bool() {
+        assert!(parse_schema("(\n  active: Bool = false,\n)").is_ok());
+    }
+
+    // String default rejected for Bool type.
+    #[test]
+    fn default_type_check_bool_rejects_string() {
+        let err = parse_schema("(\n  active: Bool = \"false\",\n)").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::InvalidDefault { .. }));
+    }
+
+    // None default matches Option type.
+    #[test]
+    fn default_type_check_option_accepts_none() {
+        assert!(parse_schema("(\n  label: Option(String) = None,\n)").is_ok());
+    }
+
+    // Some with correct inner type matches Option type.
+    #[test]
+    fn default_type_check_option_accepts_some_correct() {
+        assert!(parse_schema("(\n  label: Option(String) = Some(\"hi\"),\n)").is_ok());
+    }
+
+    // Some with wrong inner type rejected for Option type.
+    #[test]
+    fn default_type_check_option_rejects_some_wrong_type() {
+        let err = parse_schema("(\n  label: Option(String) = Some(42),\n)").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::InvalidDefault { .. }));
+    }
+
+    // Empty list matches list type.
+    #[test]
+    fn default_type_check_list_accepts_empty() {
+        assert!(parse_schema("(\n  tags: [String] = [],\n)").is_ok());
+    }
+
+    // List with correct element type matches.
+    #[test]
+    fn default_type_check_list_accepts_correct_elements() {
+        assert!(parse_schema("(\n  tags: [String] = [\"a\", \"b\"],\n)").is_ok());
+    }
+
+    // List with wrong element type rejected.
+    #[test]
+    fn default_type_check_list_rejects_wrong_elements() {
+        let err = parse_schema("(\n  tags: [String] = [1, 2],\n)").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::InvalidDefault { .. }));
+    }
+
+    // Valid enum variant accepted as default.
+    #[test]
+    fn default_type_check_enum_accepts_valid_variant() {
+        assert!(parse_schema("(\n  status: Status = Active,\n)\nenum Status { Active, Inactive }").is_ok());
+    }
+
+    // Invalid enum variant rejected as default.
+    #[test]
+    fn default_type_check_enum_rejects_invalid_variant() {
+        let err = parse_schema("(\n  status: Status = Unknown,\n)\nenum Status { Active, Inactive }").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::InvalidDefault { .. }));
+    }
+
+    // InvalidDefault error includes expected type.
+    #[test]
+    fn default_type_check_error_includes_expected() {
+        let err = parse_schema("(\n  name: String = 42,\n)").unwrap_err();
+        if let SchemaErrorKind::InvalidDefault { expected, .. } = &err.kind {
+            assert_eq!(expected, "String");
+        } else {
+            panic!("expected InvalidDefault");
+        }
+    }
+
+    // InvalidDefault error includes found value description.
+    #[test]
+    fn default_type_check_error_includes_found() {
+        let err = parse_schema("(\n  name: String = 42,\n)").unwrap_err();
+        if let SchemaErrorKind::InvalidDefault { found, .. } = &err.kind {
+            assert!(found.contains("Integer"));
+        } else {
+            panic!("expected InvalidDefault");
+        }
+    }
+
+    // InvalidDefault error span points to the default value.
+    #[test]
+    fn default_type_check_error_has_span() {
+        let err = parse_schema("(\n  name: String = 42,\n)").unwrap_err();
+        assert!(err.span.start.line > 0);
+    }
+
+    // Type alias resolved for default type checking.
+    #[test]
+    fn default_type_check_alias_resolved() {
+        assert!(parse_schema("(\n  name: Name = \"hi\",\n)\ntype Name = String").is_ok());
+    }
+
+    // Type alias with wrong default rejected.
+    #[test]
+    fn default_type_check_alias_rejects_wrong_type() {
+        let err = parse_schema("(\n  name: Name = 42,\n)\ntype Name = String").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::InvalidDefault { .. }));
     }
 
     // ========================================================

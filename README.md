@@ -4,7 +4,7 @@ Schema validation for [RON (Rusty Object Notation)](https://github.com/ron-rs/ro
 
 RON has no equivalent of JSON Schema. This project fills that gap.
 
-> **Status:** v0.6 — Schema parser, RON parser, validator, and CLI are all functional with test coverage. JSON output format available.
+> **Status:** v0.7 — Schema parser, RON parser, validator, and CLI are all functional with test coverage. JSON output and default field values available.
 
 ## Schema Format
 
@@ -84,6 +84,24 @@ Define reusable types with `type Name = T`:
 
 type Cost = (generic: Integer, sigil: Integer,)
 ```
+
+### Default Values
+
+Fields with defaults are optional — they don't produce errors when absent from data:
+
+```
+(
+  name: String,
+  label: String = "unnamed",
+  count: Integer = 0,
+  tags: [String] = [],
+  status: Status = Active,
+)
+
+enum Status { Active, Inactive }
+```
+
+Default values are type-checked against their field's declared type at schema parse time.
 
 ### Maps
 
@@ -218,8 +236,13 @@ Requires Rust 2021 edition.
 - [x] Structured error objects with code, severity, path, message, span
 - [x] Schema parse errors surfaced in JSON with `success: false`
 
+### v0.7 — Default Values
+
+- [x] `field: Type = <value>` syntax for optional fields
+- [x] Fields with defaults not required in data
+- [x] Default values type-checked at schema parse time
+
 ### Future
-- [ ] Optional field presence (`default` values)
 - [ ] Warnings and `--deny-warnings`
 - [ ] Schema composition / imports
 - [ ] Custom validation rules (value ranges, string patterns)
