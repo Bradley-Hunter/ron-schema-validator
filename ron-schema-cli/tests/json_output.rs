@@ -433,8 +433,8 @@ fn json_directory_validates_all_ron_files() {
         .unwrap();
     let json = parse_json(&output.stdout);
     let results = json["results"].as_array().unwrap();
-    // fixtures dir has valid.ron, type-mismatch.ron, missing-field.ron, parse-error.ron
-    assert_eq!(results.len(), 4);
+    // fixtures dir has valid.ron, type-mismatch.ron, missing-field.ron, parse-error.ron, out-of-order.ron
+    assert_eq!(results.len(), 5);
 }
 
 #[test]
@@ -453,4 +453,175 @@ fn json_directory_exits_with_one_when_errors_present() {
         .args(["validate", "--schema", schema(), "tests/fixtures/", "--format", "json"])
         .assert()
         .code(1);
+}
+
+// ─── Warnings (JSON) ───
+
+#[test]
+fn json_warning_exits_with_zero() {
+    cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "json"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn json_warning_has_success_true() {
+    let output = cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    assert_eq!(json["success"], true);
+}
+
+#[test]
+fn json_warning_has_empty_errors() {
+    let output = cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    assert!(json["results"][0]["errors"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn json_warning_has_one_warning() {
+    let output = cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    assert_eq!(json["results"][0]["warnings"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn json_warning_has_correct_code() {
+    let output = cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    assert_eq!(json["results"][0]["warnings"][0]["code"], "field-order");
+}
+
+#[test]
+fn json_warning_has_severity_warning() {
+    let output = cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    assert_eq!(json["results"][0]["warnings"][0]["severity"], "warning");
+}
+
+#[test]
+fn json_warning_has_path() {
+    let output = cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    assert_eq!(json["results"][0]["warnings"][0]["path"], "name");
+}
+
+#[test]
+fn json_warning_has_message() {
+    let output = cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    let message = json["results"][0]["warnings"][0]["message"].as_str().unwrap();
+    assert!(message.contains("name"));
+    assert!(message.contains("count"));
+}
+
+#[test]
+fn json_warning_has_line() {
+    let output = cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    assert!(json["results"][0]["warnings"][0]["line"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn json_warning_has_span() {
+    let output = cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    let span = &json["results"][0]["warnings"][0]["span"];
+    assert!(span["start"]["line"].as_u64().unwrap() > 0);
+    assert!(span["end"]["line"].as_u64().unwrap() > 0);
+}
+
+// ─── Warnings (human) ───
+
+#[test]
+fn human_warning_exits_with_zero() {
+    cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "human"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn human_warning_output_contains_warning_prefix() {
+    let output = cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "human"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("warning[field-order]"));
+}
+
+// ─── --deny-warnings ───
+
+#[test]
+fn deny_warnings_exits_with_one_on_warning() {
+    cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--deny-warnings"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn deny_warnings_exits_with_zero_when_no_warnings() {
+    cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/valid.ron", "--deny-warnings"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn deny_warnings_json_exits_with_one_on_warning() {
+    cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "json", "--deny-warnings"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn deny_warnings_json_still_outputs_valid_json() {
+    let output = cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/out-of-order.ron", "--format", "json", "--deny-warnings"])
+        .output()
+        .unwrap();
+    parse_json(&output.stdout);
+}
+
+// ─── No warnings on valid file ───
+
+#[test]
+fn json_valid_file_has_no_warnings() {
+    let output = cmd()
+        .args(["validate", "--schema", schema(), "tests/fixtures/valid.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    assert!(json["results"][0]["warnings"].as_array().unwrap().is_empty());
 }

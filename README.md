@@ -4,7 +4,7 @@ Schema validation for [RON (Rusty Object Notation)](https://github.com/ron-rs/ro
 
 RON has no equivalent of JSON Schema. This project fills that gap.
 
-> **Status:** v0.7 — Schema parser, RON parser, validator, and CLI are all functional with test coverage. JSON output and default field values available.
+> **Status:** v0.8 — Schema parser, RON parser, validator, and CLI are all functional with test coverage. JSON output, default field values, and warnings available.
 
 ## Schema Format
 
@@ -144,6 +144,12 @@ ron-schema validate --schema config.ronschema data/ --format json
 }
 ```
 
+Use `--deny-warnings` to treat warnings as errors (exit code 1):
+
+```
+ron-schema validate --schema config.ronschema data/ --deny-warnings
+```
+
 ## Library Usage
 
 The library crate (`ron-schema`) operates on `&str` — no file I/O, no formatting opinions.
@@ -153,9 +159,9 @@ use ron_schema::{parse_schema, parse_ron, validate, extract_source_line};
 
 let schema = parse_schema(schema_source)?;
 let value = parse_ron(ron_source)?;
-let errors = validate(&schema, &value);
+let result = validate(&schema, &value);
 
-for error in &errors {
+for error in &result.errors {
     let source_line = extract_source_line(ron_source, error.span);
     // Render however you like
 }
@@ -242,8 +248,14 @@ Requires Rust 2021 edition.
 - [x] Fields with defaults not required in data
 - [x] Default values type-checked at schema parse time
 
+### v0.8 — Warnings
+
+- [x] Warning infrastructure parallel to the error system
+- [x] `FieldOrderMismatch` warning when data field order differs from schema
+- [x] `--deny-warnings` flag causes exit code 1 on warnings
+- [x] Warnings rendered in both human and JSON output formats
+
 ### Future
-- [ ] Warnings and `--deny-warnings`
 - [ ] Schema composition / imports
 - [ ] Custom validation rules (value ranges, string patterns)
 - [ ] `init` subcommand (schema inference)

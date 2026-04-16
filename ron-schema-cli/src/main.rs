@@ -5,7 +5,7 @@ use std::fs;
 use std::process;
 use ron_schema::{
     parse_schema, parse_ron, validate, extract_source_line,
-    ValidationError, ErrorKind,
+    ValidationError, ErrorKind, Warning, WarningKind,
 };
 
 /// Top-level JSON output wrapper.
@@ -70,6 +70,47 @@ fn to_json_error(error: &ValidationError) -> JsonError {
                 column: error.span.end.column,
             },
         },
+    }
+}
+
+/// Converts a `Warning` into a `JsonError` for JSON output.
+fn to_json_warning(warning: &Warning) -> JsonError {
+    JsonError {
+        code: warning_code(&warning.kind).to_string(),
+        severity: "warning".to_string(),
+        path: warning.path.clone(),
+        message: warning_message(warning),
+        line: warning.span.start.line,
+        column: warning.span.start.column,
+        span: JsonSpan {
+            start: JsonPosition {
+                line: warning.span.start.line,
+                column: warning.span.start.column,
+            },
+            end: JsonPosition {
+                line: warning.span.end.line,
+                column: warning.span.end.column,
+            },
+        },
+    }
+}
+
+/// Maps a WarningKind to its short warning code for display.
+fn warning_code(kind: &WarningKind) -> &'static str {
+    match kind {
+        WarningKind::FieldOrderMismatch { .. } => "field-order",
+    }
+}
+
+/// Produces the human-readable message line for a warning.
+fn warning_message(warning: &Warning) -> String {
+    match &warning.kind {
+        WarningKind::FieldOrderMismatch { field_name, expected_after } => {
+            format!(
+                "field `{}` appears before `{}` but is declared after it in the schema",
+                field_name, expected_after
+            )
+        }
     }
 }
 
@@ -220,6 +261,39 @@ fn format_error(error: &ValidationError, source: &str, file_path: &str) -> Strin
     )
 }
 
+/// Formats a single warning in rustc-style output.
+fn format_warning(warning: &Warning, source: &str, file_path: &str) -> String {
+    let line = warning.span.start.line;
+    let col = warning.span.start.column;
+    let source_line = extract_source_line(source, warning.span);
+
+    let line_num_width = source_line.line_number.to_string().len();
+    let gutter_pad = " ".repeat(line_num_width);
+
+    let underline_start = source_line.highlight_start;
+    let underline_len = if source_line.highlight_end > source_line.highlight_start {
+        source_line.highlight_end - source_line.highlight_start
+    } else {
+        1
+    };
+    let underline_pad = " ".repeat(underline_start);
+    let underline = "^".repeat(underline_len);
+
+    format!(
+        "warning[{}] at {}:{}:{}\n    {}\n  {} │ {}\n  {} │ {}{} out of order",
+        warning_code(&warning.kind),
+        file_path,
+        line,
+        col,
+        warning_message(warning),
+        source_line.line_number,
+        source_line.line_text,
+        gutter_pad,
+        underline_pad,
+        underline,
+    )
+}
+
 #[derive(Parser)]
 #[command(name = "ron-schema", version, about = "Validate RON files against schemas")]
 struct Cli {
@@ -251,21 +325,25 @@ enum Commands {
         /// Output format
         #[arg(long, default_value = "human")]
         format: OutputFormat,
+
+        /// Treat warnings as errors (exit with code 1 if any warnings are found)
+        #[arg(long)]
+        deny_warnings: bool,
     },
 }
 
 /// Validates a single .ron file against a parsed schema.
-/// Returns the number of errors found. Prints human-readable output.
+/// Returns (error_count, warning_count). Prints human-readable output.
 fn validate_file(
     schema: &ron_schema::Schema,
     file_path: &PathBuf,
     display_path: &str,
-) -> usize {
+) -> (usize, usize) {
     let source = match fs::read_to_string(file_path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: could not read {}: {}", display_path, e);
-            return 1;
+            return (1, 0);
         }
     };
 
@@ -282,22 +360,26 @@ fn validate_file(
                 source_line.line_number,
                 source_line.line_text,
             );
-            return 1;
+            return (1, 0);
         }
     };
 
-    let errors = validate(schema, &ron_value);
-    if errors.is_empty() {
-        return 0;
+    let result = validate(schema, &ron_value);
+
+    for warning in &result.warnings {
+        println!("{}", format_warning(warning, &source, display_path));
+        println!();
     }
 
-    for error in &errors {
+    for error in &result.errors {
         println!("{}", format_error(error, &source, display_path));
         println!();
     }
 
-    println!("Found {} error{} in {}", errors.len(), if errors.len() == 1 { "" } else { "s" }, display_path);
-    errors.len()
+    if !result.errors.is_empty() {
+        println!("Found {} error{} in {}", result.errors.len(), if result.errors.len() == 1 { "" } else { "s" }, display_path);
+    }
+    (result.errors.len(), result.warnings.len())
 }
 
 /// Validates a single .ron file and returns structured results for JSON output.
@@ -356,11 +438,11 @@ fn validate_file_json(
         }
     };
 
-    let errors = validate(schema, &ron_value);
+    let result = validate(schema, &ron_value);
     JsonFileResult {
         file: display_path.to_string(),
-        errors: errors.iter().map(to_json_error).collect(),
-        warnings: vec![],
+        errors: result.errors.iter().map(to_json_error).collect(),
+        warnings: result.warnings.iter().map(to_json_warning).collect(),
     }
 }
 
@@ -380,7 +462,7 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Validate { schema, target, format } => {
+        Commands::Validate { schema, target, format, deny_warnings } => {
             // Read and parse the schema
             let schema_source = match fs::read_to_string(&schema) {
                 Ok(s) => s,
@@ -426,35 +508,37 @@ fn main() {
             };
 
             match format {
-                OutputFormat::Human => run_human(&parsed_schema, &target),
-                OutputFormat::Json => run_json(&parsed_schema, &target),
+                OutputFormat::Human => run_human(&parsed_schema, &target, deny_warnings),
+                OutputFormat::Json => run_json(&parsed_schema, &target, deny_warnings),
             }
         }
     }
 }
 
 /// Runs validation with human-readable output. This is the original behavior.
-fn run_human(schema: &ron_schema::Schema, target: &PathBuf) {
+fn run_human(schema: &ron_schema::Schema, target: &PathBuf, deny_warnings: bool) {
     if target.is_file() {
         let display_path = target.display().to_string();
-        let error_count = validate_file(schema, target, &display_path);
-        if error_count > 0 {
+        let (error_count, warning_count) = validate_file(schema, target, &display_path);
+        if error_count > 0 || (deny_warnings && warning_count > 0) {
             process::exit(1);
         }
     } else if target.is_dir() {
         let mut total_files = 0;
         let mut files_with_errors = 0;
         let mut total_errors = 0;
+        let mut total_warnings = 0;
 
         let entries = collect_ron_files(target);
         for file_path in &entries {
             let display_path = file_path.display().to_string();
             total_files += 1;
-            let error_count = validate_file(schema, file_path, &display_path);
+            let (error_count, warning_count) = validate_file(schema, file_path, &display_path);
             if error_count > 0 {
                 files_with_errors += 1;
                 total_errors += error_count;
             }
+            total_warnings += warning_count;
         }
 
         println!(
@@ -467,7 +551,7 @@ fn run_human(schema: &ron_schema::Schema, target: &PathBuf) {
             if total_errors == 1 { "" } else { "s" },
         );
 
-        if total_errors > 0 {
+        if total_errors > 0 || (deny_warnings && total_warnings > 0) {
             process::exit(1);
         }
     } else {
@@ -477,7 +561,7 @@ fn run_human(schema: &ron_schema::Schema, target: &PathBuf) {
 }
 
 /// Runs validation with JSON output.
-fn run_json(schema: &ron_schema::Schema, target: &PathBuf) {
+fn run_json(schema: &ron_schema::Schema, target: &PathBuf, deny_warnings: bool) {
     let results = if target.is_file() {
         let display_path = target.display().to_string();
         vec![validate_file_json(schema, target, &display_path)]
@@ -500,13 +584,14 @@ fn run_json(schema: &ron_schema::Schema, target: &PathBuf) {
     };
 
     let has_errors = results.iter().any(|r| !r.errors.is_empty());
+    let has_warnings = results.iter().any(|r| !r.warnings.is_empty());
     print_json_output(&JsonOutput {
         success: true,
         results,
         error: None,
     });
 
-    if has_errors {
+    if has_errors || (deny_warnings && has_warnings) {
         process::exit(1);
     }
 }

@@ -1,0 +1,9 @@
+(
+  count: 1,
+  name: "Iron Sword",
+  weight: 2.5,
+  active: true,
+  label: None,
+  tags: [],
+  category: Weapon,
+)

@@ -351,11 +351,11 @@ checksum = "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
 
 [[package]]
 name = "ron-schema"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "ron-schema-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "assert_cmd",
  "clap",

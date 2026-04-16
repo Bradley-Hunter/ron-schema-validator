@@ -4,21 +4,22 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{ErrorKind, ValidationError};
+use crate::error::{ErrorKind, ValidationError, ValidationResult, Warning, WarningKind};
 
 /// Validates a parsed RON value against a schema.
 ///
-/// Returns all validation errors found — does not stop at the first error.
-/// An empty vec means the data is valid.
-#[must_use] 
-pub fn validate(schema: &Schema, value: &Spanned<RonValue>) -> Vec<ValidationError> {
+/// Returns all validation errors and warnings found — does not stop at the first error.
+/// An empty `errors` vec means the data is valid. Warnings are informational only.
+#[must_use]
+pub fn validate(schema: &Schema, value: &Spanned<RonValue>) -> ValidationResult {
     let mut errors = Vec::new();
-    validate_struct(&schema.root, value, "", &mut errors, &schema.enums, &schema.aliases);
-    errors
+    let mut warnings = Vec::new();
+    validate_struct(&schema.root, value, "", &mut errors, &mut warnings, &schema.enums, &schema.aliases);
+    ValidationResult { errors, warnings }
 }
 use crate::ron::RonValue;
 use crate::schema::{EnumDef, Schema, SchemaType, StructDef};
-use crate::span::Spanned;
+use crate::span::{Span, Spanned};
 
 /// Produces a human-readable description of a RON value for error messages.
 fn describe(value: &RonValue) -> String {
@@ -66,6 +67,7 @@ fn validate_type(
     actual: &Spanned<RonValue>,
     path: &str,
     errors: &mut Vec<ValidationError>,
+    warnings: &mut Vec<Warning>,
     enums: &HashMap<String, EnumDef>,
     aliases: &HashMap<String, Spanned<SchemaType>>,
 ) {
@@ -125,7 +127,7 @@ fn validate_type(
         SchemaType::Option(inner_type) => match &actual.value {
             RonValue::Option(None) => {}
             RonValue::Option(Some(inner_value)) => {
-                validate_type(inner_type, inner_value, path, errors, enums, aliases);
+                validate_type(inner_type, inner_value, path, errors, warnings, enums, aliases);
             }
             _ => {
                 errors.push(ValidationError {
@@ -144,7 +146,7 @@ fn validate_type(
             if let RonValue::List(elements) = &actual.value {
                 for (index, element) in elements.iter().enumerate() {
                     let element_path = format!("{path}[{index}]");
-                    validate_type(element_type, element, &element_path, errors, enums, aliases);
+                    validate_type(element_type, element, &element_path, errors, warnings, enums, aliases);
                 }
             } else {
                 errors.push(ValidationError {
@@ -224,7 +226,7 @@ fn validate_type(
                         }
                         Some(Some(expected_data_type)) => {
                             // Validate the associated data
-                            validate_type(expected_data_type, data, path, errors, enums, aliases);
+                            validate_type(expected_data_type, data, path, errors, warnings, enums, aliases);
                         }
                     }
                 }
@@ -247,9 +249,9 @@ fn validate_type(
             if let RonValue::Map(entries) = &actual.value {
                 for (key, value) in entries {
                     let key_desc = describe(&key.value);
-                    validate_type(key_type, key, path, errors, enums, aliases);
+                    validate_type(key_type, key, path, errors, warnings, enums, aliases);
                     let entry_path = format!("{path}[{key_desc}]");
-                    validate_type(value_type, value, &entry_path, errors, enums, aliases);
+                    validate_type(value_type, value, &entry_path, errors, warnings, enums, aliases);
                 }
             } else {
                 errors.push(ValidationError {
@@ -268,7 +270,7 @@ fn validate_type(
                 if elements.len() == element_types.len() {
                     for (index, (expected_type, element)) in element_types.iter().zip(elements).enumerate() {
                         let element_path = format!("{path}.{index}");
-                        validate_type(expected_type, element, &element_path, errors, enums, aliases);
+                        validate_type(expected_type, element, &element_path, errors, warnings, enums, aliases);
                     }
                 } else {
                     errors.push(ValidationError {
@@ -295,14 +297,14 @@ fn validate_type(
         // Error messages use the alias name (e.g., "expected Cost") not the expanded type.
         SchemaType::AliasRef(alias_name) => {
             if let Some(resolved) = aliases.get(alias_name) {
-                validate_type(&resolved.value, actual, path, errors, enums, aliases);
+                validate_type(&resolved.value, actual, path, errors, warnings, enums, aliases);
             }
             // If alias doesn't exist, the parser already caught it — unreachable in practice.
         }
 
         // Nested struct: recurse into validate_struct.
         SchemaType::Struct(struct_def) => {
-            validate_struct(struct_def, actual, path, errors, enums, aliases);
+            validate_struct(struct_def, actual, path, errors, warnings, enums, aliases);
         }
     }
 }
@@ -318,6 +320,7 @@ fn validate_struct(
     actual: &Spanned<RonValue>,
     path: &str,
     errors: &mut Vec<ValidationError>,
+    warnings: &mut Vec<Warning>,
     enums: &HashMap<String, EnumDef>,
     aliases: &HashMap<String, Spanned<SchemaType>>,
 ) {
@@ -377,7 +380,34 @@ fn validate_struct(
     for field_def in &struct_def.fields {
         if let Some(data_value) = data_map.get(field_def.name.value.as_str()) {
             let field_path = build_path(path, &field_def.name.value);
-            validate_type(&field_def.type_.value, data_value, &field_path, errors, enums, aliases);
+            validate_type(&field_def.type_.value, data_value, &field_path, errors, warnings, enums, aliases);
+        }
+    }
+
+    // 4. Field order: warn if data fields appear in a different order than the schema
+    let schema_order: Vec<&str> = struct_def.fields.iter()
+        .map(|f| f.name.value.as_str())
+        .collect();
+    let data_fields: Vec<(&str, Span)> = data_struct.fields.iter()
+        .map(|(name, _)| (name.value.as_str(), name.span))
+        .collect();
+    let mut last_schema_index = 0;
+    for (data_name, data_span) in &data_fields {
+        if let Some(schema_index) = schema_order.iter().position(|&s| s == *data_name) {
+            if schema_index < last_schema_index {
+                // Find the field that should have come after this one
+                let expected_after = schema_order[last_schema_index];
+                warnings.push(Warning {
+                    path: build_path(path, data_name),
+                    span: *data_span,
+                    kind: WarningKind::FieldOrderMismatch {
+                        field_name: data_name.to_string(),
+                        expected_after: expected_after.to_string(),
+                    },
+                });
+            } else {
+                last_schema_index = schema_index;
+            }
         }
     }
 }
@@ -390,6 +420,11 @@ mod tests {
 
     /// Parses both a schema and data string, runs validation, returns errors.
     fn validate_str(schema_src: &str, data_src: &str) -> Vec<ValidationError> {
+        validate_full(schema_src, data_src).errors
+    }
+
+    /// Parses both a schema and data string, runs validation, returns the full result.
+    fn validate_full(schema_src: &str, data_src: &str) -> ValidationResult {
         let schema = parse_schema(schema_src).expect("test schema should parse");
         let data = parse_ron(data_src).expect("test data should parse");
         validate(&schema, &data)
@@ -610,6 +645,106 @@ mod tests {
     fn missing_fields_all_reported() {
         let errs = validate_str("(\n  a: String,\n  b: Integer,\n  c: Bool,\n)", "()");
         assert_eq!(errs.len(), 3);
+    }
+
+    // ========================================================
+    // FieldOrderMismatch warnings
+    // ========================================================
+
+    // No warning when fields are in schema order.
+    #[test]
+    fn field_order_correct_no_warning() {
+        let result = validate_full("(\n  a: String,\n  b: Integer,\n)", "(a: \"hi\", b: 1)");
+        assert!(result.warnings.is_empty());
+    }
+
+    // Warning when fields are swapped.
+    #[test]
+    fn field_order_swapped_produces_warning() {
+        let result = validate_full("(\n  a: String,\n  b: Integer,\n)", "(b: 1, a: \"hi\")");
+        assert_eq!(result.warnings.len(), 1);
+    }
+
+    // Warning has FieldOrderMismatch kind.
+    #[test]
+    fn field_order_warning_has_correct_kind() {
+        let result = validate_full("(\n  a: String,\n  b: Integer,\n)", "(b: 1, a: \"hi\")");
+        assert!(matches!(&result.warnings[0].kind, WarningKind::FieldOrderMismatch { .. }));
+    }
+
+    // Warning identifies the out-of-order field.
+    #[test]
+    fn field_order_warning_identifies_field() {
+        let result = validate_full("(\n  a: String,\n  b: Integer,\n)", "(b: 1, a: \"hi\")");
+        if let WarningKind::FieldOrderMismatch { field_name, .. } = &result.warnings[0].kind {
+            assert_eq!(field_name, "a");
+        } else {
+            panic!("expected FieldOrderMismatch");
+        }
+    }
+
+    // Warning identifies the field it should come after.
+    #[test]
+    fn field_order_warning_identifies_expected_after() {
+        let result = validate_full("(\n  a: String,\n  b: Integer,\n)", "(b: 1, a: \"hi\")");
+        if let WarningKind::FieldOrderMismatch { expected_after, .. } = &result.warnings[0].kind {
+            assert_eq!(expected_after, "b");
+        } else {
+            panic!("expected FieldOrderMismatch");
+        }
+    }
+
+    // Warning has correct path.
+    #[test]
+    fn field_order_warning_has_correct_path() {
+        let result = validate_full("(\n  a: String,\n  b: Integer,\n)", "(b: 1, a: \"hi\")");
+        assert_eq!(result.warnings[0].path, "a");
+    }
+
+    // Warning span points to the field name.
+    #[test]
+    fn field_order_warning_has_span() {
+        let result = validate_full("(\n  a: String,\n  b: Integer,\n)", "(b: 1, a: \"hi\")");
+        assert!(result.warnings[0].span.start.line > 0);
+    }
+
+    // Correct order with three fields produces no warning.
+    #[test]
+    fn field_order_three_fields_correct() {
+        let result = validate_full(
+            "(\n  a: String,\n  b: Integer,\n  c: Bool,\n)",
+            "(a: \"hi\", b: 1, c: true)",
+        );
+        assert!(result.warnings.is_empty());
+    }
+
+    // Middle field out of order.
+    #[test]
+    fn field_order_middle_field_swapped() {
+        let result = validate_full(
+            "(\n  a: String,\n  b: Integer,\n  c: Bool,\n)",
+            "(a: \"hi\", c: true, b: 1)",
+        );
+        assert_eq!(result.warnings.len(), 1);
+        if let WarningKind::FieldOrderMismatch { field_name, .. } = &result.warnings[0].kind {
+            assert_eq!(field_name, "b");
+        } else {
+            panic!("expected FieldOrderMismatch");
+        }
+    }
+
+    // Field order warning does not produce errors.
+    #[test]
+    fn field_order_warning_no_errors() {
+        let result = validate_full("(\n  a: String,\n  b: Integer,\n)", "(b: 1, a: \"hi\")");
+        assert!(result.errors.is_empty());
+    }
+
+    // Unknown fields don't affect order checking.
+    #[test]
+    fn field_order_with_unknown_field() {
+        let result = validate_full("(\n  a: String,\n  b: Integer,\n)", "(b: 1, x: true, a: \"hi\")");
+        assert_eq!(result.warnings.len(), 1);
     }
 
     // ========================================================

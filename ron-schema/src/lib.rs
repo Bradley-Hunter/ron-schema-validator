@@ -20,5 +20,5 @@ pub use schema::parser::parse_schema;
 pub use ron::{RonValue, RonStruct};
 pub use ron::parser::parse_ron;
 pub use validate::validate;
-pub use error::{ValidationError, ErrorKind, SchemaParseError, SchemaErrorKind, RonParseError, RonErrorKind};
+pub use error::{ValidationError, ErrorKind, ValidationResult, Warning, WarningKind, SchemaParseError, SchemaErrorKind, RonParseError, RonErrorKind};
 pub use diagnostic::{extract_source_line, SourceLine};

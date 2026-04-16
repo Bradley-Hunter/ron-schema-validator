@@ -243,3 +243,35 @@ pub struct ValidationError {
     /// What went wrong.
     pub kind: ErrorKind,
 }
+
+/// Specific kinds of warnings produced during validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WarningKind {
+    /// Fields in the data appear in a different order than declared in the schema.
+    FieldOrderMismatch {
+        /// The field that appears out of order.
+        field_name: String,
+        /// The field that should have appeared before it according to the schema.
+        expected_after: String,
+    },
+}
+
+/// A warning produced during validation — informational, does not indicate invalid data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Warning {
+    /// Dot/bracket field path to the relevant value.
+    pub path: String,
+    /// Source location of the relevant value in the data file.
+    pub span: Span,
+    /// What the warning is about.
+    pub kind: WarningKind,
+}
+
+/// The result of validating RON data against a schema.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidationResult {
+    /// All validation errors found. Empty means the data is valid.
+    pub errors: Vec<ValidationError>,
+    /// All warnings found. Warnings do not indicate invalid data.
+    pub warnings: Vec<Warning>,
+}
