@@ -12,6 +12,8 @@ pub mod validate;
 pub mod error;
 /// Source line extraction for rendering error diagnostics.
 pub mod diagnostic;
+/// Import resolution for schema composition.
+pub mod resolve;
 
 // Re-exports — these are the public API
 pub use span::{Position, Span, Spanned};
@@ -20,5 +22,6 @@ pub use schema::parser::parse_schema;
 pub use ron::{RonValue, RonStruct};
 pub use ron::parser::parse_ron;
 pub use validate::validate;
+pub use resolve::{SchemaResolver, resolve_imports};
 pub use error::{ValidationError, ErrorKind, ValidationResult, Warning, WarningKind, SchemaParseError, SchemaErrorKind, RonParseError, RonErrorKind};
 pub use diagnostic::{extract_source_line, SourceLine};

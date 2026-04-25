@@ -4,7 +4,7 @@ Schema validation for [RON (Rusty Object Notation)](https://github.com/ron-rs/ro
 
 RON has no equivalent of JSON Schema. This project fills that gap.
 
-> **Status:** v0.8 — Schema parser, RON parser, validator, and CLI are all functional with test coverage. JSON output, default field values, and warnings available.
+> **Status:** v0.9 — Schema parser, RON parser, validator, and CLI are all functional with test coverage. JSON output, default field values, warnings, and schema imports available.
 
 ## Schema Format
 
@@ -102,6 +102,29 @@ enum Status { Active, Inactive }
 ```
 
 Default values are type-checked against their field's declared type at schema parse time.
+
+### Imports
+
+Share enums and type aliases across schemas using `import` statements at the top of a file:
+
+```
+// shared-types.ronschema
+enum Rarity { Common, Uncommon, Rare }
+type Label = String
+```
+
+```
+// item.ronschema
+import "shared-types.ronschema"
+
+(
+  name: String,
+  rarity: Rarity,
+  label: Label,
+)
+```
+
+Import paths are resolved relative to the importing schema's directory. Circular imports and name collisions between imported and local types are reported as parse errors. Import nesting is limited to 10 levels.
 
 ### Maps
 
@@ -255,8 +278,15 @@ Requires Rust 2021 edition.
 - [x] `--deny-warnings` flag causes exit code 1 on warnings
 - [x] Warnings rendered in both human and JSON output formats
 
+### v0.9 — Schema Composition / Imports
+
+- [x] `import "path"` syntax at the top of schema files
+- [x] Imported enums and type aliases merged into importing schema
+- [x] `SchemaResolver` trait keeps the library filesystem-free
+- [x] Circular import detection with 10-level nesting cap
+- [x] Name collision detection between imports and local types
+
 ### Future
-- [ ] Schema composition / imports
 - [ ] Custom validation rules (value ranges, string patterns)
 - [ ] `init` subcommand (schema inference)
 

@@ -1,0 +1,6 @@
+import "shared-types.ronschema"
+(
+  name: String,
+  rarity: Rarity,
+  label: Label,
+)

@@ -74,4 +74,6 @@ pub struct Schema {
     pub enums: HashMap<String, EnumDef>,
     /// Type aliases, keyed by name. Stored as-is (not expanded) for better error messages.
     pub aliases: HashMap<String, Spanned<SchemaType>>,
+    /// Import paths declared at the top of the schema file, before resolution.
+    pub imports: Vec<Spanned<String>>,
 }

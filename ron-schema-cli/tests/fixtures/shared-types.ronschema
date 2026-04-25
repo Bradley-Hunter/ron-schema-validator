@@ -1,0 +1,2 @@
+enum Rarity { Common, Uncommon, Rare }
+type Label = String

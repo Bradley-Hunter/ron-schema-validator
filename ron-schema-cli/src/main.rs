@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::fs;
 use std::process;
 use ron_schema::{
-    parse_schema, parse_ron, validate, extract_source_line,
-    ValidationError, ErrorKind, Warning, WarningKind,
+    parse_schema, parse_ron, validate, extract_source_line, resolve_imports,
+    SchemaResolver, ValidationError, ErrorKind, Warning, WarningKind,
 };
 
 /// Top-level JSON output wrapper.
@@ -446,6 +446,19 @@ fn validate_file_json(
     }
 }
 
+/// Resolves schema imports by reading files relative to the schema file's directory.
+struct FileSchemaResolver {
+    base_dir: PathBuf,
+}
+
+impl SchemaResolver for FileSchemaResolver {
+    fn resolve(&self, import_path: &str) -> Result<String, String> {
+        let full_path = self.base_dir.join(import_path);
+        fs::read_to_string(&full_path)
+            .map_err(|e| format!("could not read {}: {}", full_path.display(), e))
+    }
+}
+
 /// Serializes a `JsonOutput` to stdout. On serialization failure, prints a
 /// plain-text message to stderr and exits with code 2.
 fn print_json_output(output: &JsonOutput) {
@@ -479,7 +492,7 @@ fn main() {
                     process::exit(2);
                 }
             };
-            let parsed_schema = match parse_schema(&schema_source) {
+            let mut parsed_schema = match parse_schema(&schema_source) {
                 Ok(s) => s,
                 Err(e) => {
                     let msg = format!(
@@ -506,6 +519,36 @@ fn main() {
                     process::exit(2);
                 }
             };
+
+            // Resolve imports relative to the schema file's directory
+            if !parsed_schema.imports.is_empty() {
+                let base_dir = schema.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
+                let resolver = FileSchemaResolver { base_dir };
+                if let Err(e) = resolve_imports(&mut parsed_schema, &resolver) {
+                    let msg = format!(
+                        "import error at {}:{}:{}: {:?}",
+                        schema.display(),
+                        e.span.start.line,
+                        e.span.start.column,
+                        e.kind,
+                    );
+                    match format {
+                        OutputFormat::Human => eprintln!(
+                            "error[import] at {}:{}:{}\n    {:?}",
+                            schema.display(),
+                            e.span.start.line,
+                            e.span.start.column,
+                            e.kind,
+                        ),
+                        OutputFormat::Json => print_json_output(&JsonOutput {
+                            success: false,
+                            error: Some(msg),
+                            results: vec![],
+                        }),
+                    }
+                    process::exit(2);
+                }
+            }
 
             match format {
                 OutputFormat::Human => run_human(&parsed_schema, &target, deny_warnings),

@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Read(//e/Code/_ideas/open-source/01-ron-schema-validator/design/**)",
-      "Read(//e/Code/_ideas/open-source/01-ron-schema-validator/**)"
+      "Read(//e/Code/_ideas/open-source/01-ron-schema-validator/**)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo test *)"
     ]
   }
 }

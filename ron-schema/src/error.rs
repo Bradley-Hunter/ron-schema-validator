@@ -65,6 +65,32 @@ pub enum SchemaErrorKind {
         /// A description of the default value.
         found: String,
     },
+    /// An import path could not be resolved (file not found, read error, etc.).
+    UnresolvedImport {
+        /// The import path that failed.
+        path: String,
+        /// A human-readable reason for the failure.
+        reason: String,
+    },
+    /// An import creates a circular dependency.
+    CircularImport {
+        /// The import path that closes the cycle.
+        path: String,
+    },
+    /// An imported schema file contains a parse error.
+    ImportParseError {
+        /// The import path that failed to parse.
+        path: String,
+        /// The underlying parse error.
+        inner: Box<SchemaErrorKind>,
+    },
+    /// An imported type name collides with a locally defined type.
+    ImportNameCollision {
+        /// The colliding type name.
+        name: String,
+        /// The import path that introduced the collision.
+        import_path: String,
+    },
     /// A syntax error — the parser encountered a token it did not expect.
     UnexpectedToken {
         /// What the parser expected at this position.

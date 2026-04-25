@@ -433,8 +433,9 @@ fn json_directory_validates_all_ron_files() {
         .unwrap();
     let json = parse_json(&output.stdout);
     let results = json["results"].as_array().unwrap();
-    // fixtures dir has valid.ron, type-mismatch.ron, missing-field.ron, parse-error.ron, out-of-order.ron
-    assert_eq!(results.len(), 5);
+    // fixtures dir has valid.ron, type-mismatch.ron, missing-field.ron, parse-error.ron,
+    // out-of-order.ron, import-valid.ron, import-invalid-variant.ron
+    assert_eq!(results.len(), 7);
 }
 
 #[test]
@@ -624,4 +625,74 @@ fn json_valid_file_has_no_warnings() {
         .unwrap();
     let json = parse_json(&output.stdout);
     assert!(json["results"][0]["warnings"].as_array().unwrap().is_empty());
+}
+
+// ─── Imports ───
+
+fn importing_schema() -> &'static str {
+    "tests/fixtures/importing.ronschema"
+}
+
+#[test]
+fn import_valid_file_exits_with_zero() {
+    cmd()
+        .args(["validate", "--schema", importing_schema(), "tests/fixtures/import-valid.ron"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn import_valid_file_json_has_no_errors() {
+    let output = cmd()
+        .args(["validate", "--schema", importing_schema(), "tests/fixtures/import-valid.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    assert!(json["results"][0]["errors"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn import_validates_imported_enum() {
+    cmd()
+        .args(["validate", "--schema", importing_schema(), "tests/fixtures/import-invalid-variant.ron"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn import_invalid_variant_json_has_error() {
+    let output = cmd()
+        .args(["validate", "--schema", importing_schema(), "tests/fixtures/import-invalid-variant.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    assert_eq!(json["results"][0]["errors"][0]["code"], "invalid-variant");
+}
+
+#[test]
+fn import_missing_file_exits_with_two() {
+    cmd()
+        .args(["validate", "--schema", "tests/fixtures/import-missing.ronschema", "tests/fixtures/valid.ron"])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn import_missing_file_json_has_success_false() {
+    let output = cmd()
+        .args(["validate", "--schema", "tests/fixtures/import-missing.ronschema", "tests/fixtures/valid.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    assert_eq!(json["success"], false);
+}
+
+#[test]
+fn import_missing_file_json_has_error_message() {
+    let output = cmd()
+        .args(["validate", "--schema", "tests/fixtures/import-missing.ronschema", "tests/fixtures/valid.ron", "--format", "json"])
+        .output()
+        .unwrap();
+    let json = parse_json(&output.stdout);
+    assert!(json["error"].as_str().unwrap().contains("nonexistent.ronschema"));
 }

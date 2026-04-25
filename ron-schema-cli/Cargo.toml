@@ -1,6 +1,6 @@
 [package]
 name = "ron-schema-cli"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "CLI tool for validating RON files against schemas"
 license = "MIT"
@@ -14,7 +14,7 @@ name = "ron-schema"
 path = "src/main.rs"
 
 [dependencies]
-ron-schema = { version = "0.8.0", path = "../ron-schema" }
+ron-schema = { version = "0.9.0", path = "../ron-schema" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

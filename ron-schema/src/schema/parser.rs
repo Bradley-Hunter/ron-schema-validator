@@ -133,6 +133,38 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_string_literal(&mut self) -> Result<Spanned<String>, SchemaParseError> {
+        let start = self.position();
+        self.expect_char(b'"')?;
+        let mut content = String::new();
+        loop {
+            match self.peek() {
+                Some(b'"') => {
+                    self.advance();
+                    break;
+                }
+                Some(b) => {
+                    content.push(b as char);
+                    self.advance();
+                }
+                None => {
+                    return Err(SchemaParseError {
+                        span: Span { start, end: self.position() },
+                        kind: SchemaErrorKind::UnexpectedToken {
+                            expected: "closing '\"'".to_string(),
+                            found: "end of input".to_string(),
+                        },
+                    });
+                }
+            }
+        }
+        let end = self.position();
+        Ok(Spanned {
+            value: content,
+            span: Span { start, end },
+        })
+    }
+
     #[allow(clippy::too_many_lines)]
     fn parse_type(&mut self) -> Result<Spanned<SchemaType>, SchemaParseError> {
         self.skip_whitespace();
@@ -448,6 +480,26 @@ pub fn parse_schema(source: &str) -> Result<Schema, SchemaParseError> {
     let mut parser = Parser::new(source);
     parser.skip_whitespace();
 
+    // Parse import statements at the top of the file
+    let mut imports: Vec<Spanned<String>> = Vec::new();
+    while parser.peek().is_some() {
+        // Check if the next token is "import" without consuming it
+        if source[parser.offset..].starts_with("import")
+            && source.as_bytes().get(parser.offset + 6).is_some_and(|&b| b == b' ' || b == b'\t' || b == b'"')
+        {
+            // Consume "import"
+            for _ in 0..6 {
+                parser.advance();
+            }
+            parser.skip_whitespace();
+            let path = parser.parse_string_literal()?;
+            imports.push(path);
+            parser.skip_whitespace();
+        } else {
+            break;
+        }
+    }
+
     let mut root = if parser.peek() == Some(b'(') {
         parser.parse_struct()?
     } else {
@@ -501,7 +553,7 @@ pub fn parse_schema(source: &str) -> Result<Schema, SchemaParseError> {
                 return Err(SchemaParseError {
                     span: keyword.span,
                     kind: SchemaErrorKind::UnexpectedToken {
-                        expected: "\"enum\" or \"type\"".to_string(),
+                        expected: "\"enum\", \"type\", or \"import\"".to_string(),
                         found: other.to_string(),
                     },
                 });
@@ -517,8 +569,12 @@ pub fn parse_schema(source: &str) -> Result<Schema, SchemaParseError> {
         reclassify_refs_in_type_by_name(&mut spanned_type.value, &alias_names);
     }
 
-    // Verify all refs resolve to a known enum or alias
-    verify_refs(&root, &enums, &aliases)?;
+    // Verify all refs resolve to a known enum or alias.
+    // Skip this check if the schema has imports — unresolved refs may come from
+    // imported types. resolve_imports() re-runs verification after merging.
+    if imports.is_empty() {
+        verify_refs(&root, &enums, &aliases)?;
+    }
 
     // Check for recursive aliases
     verify_no_recursive_aliases(&aliases)?;
@@ -526,12 +582,12 @@ pub fn parse_schema(source: &str) -> Result<Schema, SchemaParseError> {
     // Verify default values match their declared types
     verify_defaults(&root, &enums, &aliases)?;
 
-    Ok(Schema { root, enums, aliases })
+    Ok(Schema { root, enums, aliases, imports })
 }
 
 /// Reclassifies `EnumRef` names that are actually type aliases into `AliasRef`.
 /// Mutates the struct in place.
-fn reclassify_refs_in_struct_by_name(
+pub(crate) fn reclassify_refs_in_struct_by_name(
     struct_def: &mut StructDef,
     alias_names: &HashSet<String>,
 ) {
@@ -569,7 +625,7 @@ fn reclassify_refs_in_type_by_name(
 
 /// Verifies all `EnumRef` names resolve to a defined enum.
 /// (`AliasRefs` have already been reclassified, so any remaining `EnumRef` must be an actual enum.)
-fn verify_refs(
+pub(crate) fn verify_refs(
     struct_def: &StructDef,
     enums: &HashMap<String, EnumDef>,
     aliases: &HashMap<String, Spanned<SchemaType>>,
@@ -779,7 +835,7 @@ fn describe_value(value: &RonValue) -> String {
 }
 
 /// Verifies that all default values in a struct match their declared types.
-fn verify_defaults(
+pub(crate) fn verify_defaults(
     struct_def: &StructDef,
     enums: &HashMap<String, EnumDef>,
     aliases: &HashMap<String, Spanned<SchemaType>>,
