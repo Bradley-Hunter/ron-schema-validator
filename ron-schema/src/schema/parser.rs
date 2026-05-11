@@ -6,7 +6,7 @@ use crate::span::{Position, Span, Spanned};
 use crate::error::{SchemaParseError, SchemaErrorKind};
 use crate::ron::RonValue;
 use crate::ron::parser::Parser as RonParser;
-use super::{SchemaType, FieldDef, StructDef, EnumDef, HashSet, Schema, HashMap};
+use super::{SchemaType, FieldDef, StructDef, EnumDef, HashSet, Schema, HashMap, FieldAnnotation, StructAnnotation, CompareOp};
 
 #[derive(Debug)]
 struct Parser<'a> {
@@ -222,14 +222,14 @@ impl<'a> Parser<'a> {
                 self.advance(); // consume '('
                 self.skip_whitespace();
 
-                let is_struct = if self.peek() == Some(b')') {
-                    true // empty parens → treat as empty struct
+                let is_struct = if self.peek() == Some(b')') || self.peek() == Some(b'@') {
+                    true
                 } else {
                     // Try to determine if this is name: Type (struct) or Type, Type (tuple)
                     let probe_pos = (self.offset, self.line, self.column);
                     let is_field = if let Ok(_id) = self.parse_identifier() {
                         self.skip_whitespace();
-                        
+
                         self.peek() == Some(b':')
                     } else {
                         false
@@ -311,6 +311,230 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_number_literal(&mut self) -> Result<f64, SchemaParseError> {
+        let start = self.position();
+        let negative = if self.peek() == Some(b'-') {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        let num_start = self.offset;
+        while self.peek().is_some_and(|b| b.is_ascii_digit() || b == b'.') {
+            self.advance();
+        }
+        if self.offset == num_start {
+            let end = self.position();
+            return Err(SchemaParseError {
+                span: Span { start, end },
+                kind: SchemaErrorKind::UnexpectedToken {
+                    expected: "number".to_string(),
+                    found: self.peek().map_or("end of input".to_string(), |b| format!("'{}'", b as char)),
+                },
+            });
+        }
+        let text = &self.source[if negative { start.offset } else { num_start }..self.offset];
+        text.parse::<f64>().map_err(|_| SchemaParseError {
+            span: Span { start, end: self.position() },
+            kind: SchemaErrorKind::UnexpectedToken {
+                expected: "valid number".to_string(),
+                found: text.to_string(),
+            },
+        })
+    }
+
+    fn parse_usize_literal(&mut self) -> Result<usize, SchemaParseError> {
+        let start = self.position();
+        let num_start = self.offset;
+        while self.peek().is_some_and(|b| b.is_ascii_digit()) {
+            self.advance();
+        }
+        if self.offset == num_start {
+            let end = self.position();
+            return Err(SchemaParseError {
+                span: Span { start, end },
+                kind: SchemaErrorKind::UnexpectedToken {
+                    expected: "non-negative integer".to_string(),
+                    found: self.peek().map_or("end of input".to_string(), |b| format!("'{}'", b as char)),
+                },
+            });
+        }
+        let text = &self.source[num_start..self.offset];
+        text.parse::<usize>().map_err(|_| SchemaParseError {
+            span: Span { start, end: self.position() },
+            kind: SchemaErrorKind::UnexpectedToken {
+                expected: "valid non-negative integer".to_string(),
+                found: text.to_string(),
+            },
+        })
+    }
+
+    fn parse_field_annotation(&mut self) -> Result<Spanned<FieldAnnotation>, SchemaParseError> {
+        let start = self.position();
+        self.expect_char(b'@')?;
+        let name = self.parse_identifier()?;
+        self.skip_whitespace();
+        self.expect_char(b'(')?;
+        self.skip_whitespace();
+
+        let annotation = match name.value.as_str() {
+            "range" => {
+                let min = self.parse_number_literal()?;
+                self.skip_whitespace();
+                self.expect_char(b',')?;
+                self.skip_whitespace();
+                let max = self.parse_number_literal()?;
+                if min > max {
+                    let end = self.position();
+                    return Err(SchemaParseError {
+                        span: Span { start, end },
+                        kind: SchemaErrorKind::UnexpectedToken {
+                            expected: "min <= max in @range".to_string(),
+                            found: format!("min ({min}) > max ({max})"),
+                        },
+                    });
+                }
+                FieldAnnotation::Range(min, max)
+            }
+            "min_length" => {
+                let n = self.parse_usize_literal()?;
+                FieldAnnotation::MinLength(n)
+            }
+            "max_length" => {
+                let n = self.parse_usize_literal()?;
+                FieldAnnotation::MaxLength(n)
+            }
+            "pattern" => {
+                #[cfg(not(feature = "regex"))]
+                {
+                    let _ = self.parse_string_literal()?;
+                    let end = self.position();
+                    return Err(SchemaParseError {
+                        span: Span { start, end },
+                        kind: SchemaErrorKind::UnexpectedToken {
+                            expected: "@pattern requires the `regex` feature".to_string(),
+                            found: "enable it with `ron-schema = { features = [\"regex\"] }`".to_string(),
+                        },
+                    });
+                }
+                #[cfg(feature = "regex")]
+                {
+                    let pat = self.parse_string_literal()?;
+                    if regex::Regex::new(&pat.value).is_err() {
+                        let end = self.position();
+                        return Err(SchemaParseError {
+                            span: Span { start, end },
+                            kind: SchemaErrorKind::UnexpectedToken {
+                                expected: "valid regex pattern".to_string(),
+                                found: format!("invalid regex \"{}\"", pat.value),
+                            },
+                        });
+                    }
+                    FieldAnnotation::Pattern(pat.value)
+                }
+            }
+            _ => {
+                let end = self.position();
+                return Err(SchemaParseError {
+                    span: Span { start, end },
+                    kind: SchemaErrorKind::UnexpectedToken {
+                        expected: "annotation name (range, min_length, max_length, pattern)".to_string(),
+                        found: format!("@{}", name.value),
+                    },
+                });
+            }
+        };
+
+        self.skip_whitespace();
+        self.expect_char(b')')?;
+        let end = self.position();
+
+        Ok(Spanned {
+            value: annotation,
+            span: Span { start, end },
+        })
+    }
+
+    fn parse_compare_op(&mut self) -> Result<CompareOp, SchemaParseError> {
+        let start = self.position();
+        match self.peek() {
+            Some(b'<') => {
+                self.advance();
+                if self.peek() == Some(b'=') {
+                    self.advance();
+                    Ok(CompareOp::Le)
+                } else {
+                    Ok(CompareOp::Lt)
+                }
+            }
+            Some(b'>') => {
+                self.advance();
+                if self.peek() == Some(b'=') {
+                    self.advance();
+                    Ok(CompareOp::Ge)
+                } else {
+                    Ok(CompareOp::Gt)
+                }
+            }
+            Some(b'=') => {
+                self.advance();
+                self.expect_char(b'=')?;
+                Ok(CompareOp::Eq)
+            }
+            Some(b'!') => {
+                self.advance();
+                self.expect_char(b'=')?;
+                Ok(CompareOp::Ne)
+            }
+            _ => {
+                let end = self.position();
+                Err(SchemaParseError {
+                    span: Span { start, end },
+                    kind: SchemaErrorKind::UnexpectedToken {
+                        expected: "comparison operator (<, <=, >, >=, ==, !=)".to_string(),
+                        found: self.peek().map_or("end of input".to_string(), |b| format!("'{}'", b as char)),
+                    },
+                })
+            }
+        }
+    }
+
+    fn parse_require(&mut self) -> Result<Spanned<StructAnnotation>, SchemaParseError> {
+        let start = self.position();
+        self.expect_char(b'@')?;
+        let name = self.parse_identifier()?;
+        if name.value != "require" {
+            let end = self.position();
+            return Err(SchemaParseError {
+                span: Span { start, end },
+                kind: SchemaErrorKind::UnexpectedToken {
+                    expected: "@require".to_string(),
+                    found: format!("@{}", name.value),
+                },
+            });
+        }
+        self.skip_whitespace();
+        self.expect_char(b'(')?;
+        self.skip_whitespace();
+        let left = self.parse_identifier()?;
+        self.skip_whitespace();
+        let op = self.parse_compare_op()?;
+        self.skip_whitespace();
+        let right = self.parse_identifier()?;
+        self.skip_whitespace();
+        self.expect_char(b')')?;
+        let end = self.position();
+
+        Ok(Spanned {
+            value: StructAnnotation {
+                left: left.value,
+                op,
+                right: right.value,
+            },
+            span: Span { start, end },
+        })
+    }
+
     fn parse_field(&mut self) -> Result<FieldDef, SchemaParseError> {
         self.skip_whitespace();
         let name = self.parse_identifier()?;
@@ -352,6 +576,7 @@ impl<'a> Parser<'a> {
             name,
             type_,
             default,
+            annotations: Vec::new(),
         })
     }
 
@@ -359,13 +584,45 @@ impl<'a> Parser<'a> {
         self.skip_whitespace();
         self.expect_char(b'(')?;
         let mut fields: Vec<FieldDef> = Vec::new();
+        let mut struct_annotations: Vec<Spanned<StructAnnotation>> = Vec::new();
+        let mut pending_field_annotations: Vec<Spanned<FieldAnnotation>> = Vec::new();
         loop {
             self.skip_whitespace();
             if let Some(byte) = self.peek() {
                 if byte == b')' {
-                    break ;
-                } 
-                let field = self.parse_field()?;
+                    break;
+                }
+                if byte == b'@' {
+                    let saved_offset = self.offset;
+                    let saved_line = self.line;
+                    let saved_column = self.column;
+                    self.advance(); // skip '@'
+                    let peeked_name = self.parse_identifier()?;
+                    // Restore position to re-parse with the proper method
+                    self.offset = saved_offset;
+                    self.line = saved_line;
+                    self.column = saved_column;
+
+                    if peeked_name.value == "require" {
+                        if !pending_field_annotations.is_empty() {
+                            return Err(SchemaParseError {
+                                span: Span { start: self.position(), end: self.position() },
+                                kind: SchemaErrorKind::UnexpectedToken {
+                                    expected: "field definition after field annotations".to_string(),
+                                    found: "@require (struct-level annotation)".to_string(),
+                                },
+                            });
+                        }
+                        let req = self.parse_require()?;
+                        struct_annotations.push(req);
+                    } else {
+                        let ann = self.parse_field_annotation()?;
+                        pending_field_annotations.push(ann);
+                    }
+                    continue;
+                }
+                let mut field = self.parse_field()?;
+                field.annotations = std::mem::take(&mut pending_field_annotations);
                 fields.push(field);
                 self.skip_whitespace();
                 if self.peek() == Some(b',') {
@@ -378,8 +635,17 @@ impl<'a> Parser<'a> {
                 });
             }
         }
+        if !pending_field_annotations.is_empty() {
+            return Err(SchemaParseError {
+                span: pending_field_annotations[0].span,
+                kind: SchemaErrorKind::UnexpectedToken {
+                    expected: "field definition after annotations".to_string(),
+                    found: ")".to_string(),
+                },
+            });
+        }
         self.expect_char(b')')?;
-        Ok(StructDef { fields })
+        Ok(StructDef { fields, annotations: struct_annotations })
     }
 
     /// Parses `(Type, Type, ...)` as a tuple type.
@@ -503,7 +769,7 @@ pub fn parse_schema(source: &str) -> Result<Schema, SchemaParseError> {
     let mut root = if parser.peek() == Some(b'(') {
         parser.parse_struct()?
     } else {
-        StructDef { fields: Vec::new() }
+        StructDef { fields: Vec::new(), annotations: Vec::new() }
     };
 
     let mut enums: HashMap<String, EnumDef> = HashMap::new();
@@ -1856,5 +2122,203 @@ mod tests {
         let action = schema.enums.get("Action").unwrap();
         assert!(matches!(action.variants.get("Move"), Some(Some(SchemaType::Tuple(_)))));
         assert_eq!(action.variants.get("Wait"), Some(&None));
+    }
+
+    // ========================================================
+    // Annotation parsing — field annotations
+    // ========================================================
+
+    // @range parsed with integer bounds.
+    #[test]
+    fn parse_range_annotation_integers() {
+        let schema = parse_schema("(\n  @range(0, 100)\n  health: Integer,\n)").unwrap();
+        assert_eq!(schema.root.fields[0].annotations.len(), 1);
+        assert_eq!(schema.root.fields[0].annotations[0].value, FieldAnnotation::Range(0.0, 100.0));
+    }
+
+    // @range parsed with float bounds.
+    #[test]
+    fn parse_range_annotation_floats() {
+        let schema = parse_schema("(\n  @range(0.0, 1.0)\n  ratio: Float,\n)").unwrap();
+        assert_eq!(schema.root.fields[0].annotations[0].value, FieldAnnotation::Range(0.0, 1.0));
+    }
+
+    // @range parsed with negative bounds.
+    #[test]
+    fn parse_range_annotation_negative() {
+        let schema = parse_schema("(\n  @range(-50, 50)\n  offset: Integer,\n)").unwrap();
+        assert_eq!(schema.root.fields[0].annotations[0].value, FieldAnnotation::Range(-50.0, 50.0));
+    }
+
+    // @range rejects min > max.
+    #[test]
+    fn parse_range_annotation_min_greater_than_max() {
+        let err = parse_schema("(\n  @range(100, 0)\n  health: Integer,\n)").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::UnexpectedToken { .. }));
+    }
+
+    // @min_length parsed.
+    #[test]
+    fn parse_min_length_annotation() {
+        let schema = parse_schema("(\n  @min_length(1)\n  name: String,\n)").unwrap();
+        assert_eq!(schema.root.fields[0].annotations[0].value, FieldAnnotation::MinLength(1));
+    }
+
+    // @max_length parsed.
+    #[test]
+    fn parse_max_length_annotation() {
+        let schema = parse_schema("(\n  @max_length(50)\n  name: String,\n)").unwrap();
+        assert_eq!(schema.root.fields[0].annotations[0].value, FieldAnnotation::MaxLength(50));
+    }
+
+    // @pattern rejected without regex feature.
+    #[cfg(not(feature = "regex"))]
+    #[test]
+    fn parse_pattern_annotation_rejected_without_feature() {
+        let err = parse_schema("(\n  @pattern(\"[a-z]+\")\n  tag: String,\n)").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::UnexpectedToken { .. }));
+    }
+
+    // @pattern parsed with regex feature.
+    #[cfg(feature = "regex")]
+    #[test]
+    fn parse_pattern_annotation() {
+        let schema = parse_schema("(\n  @pattern(\"[a-z]+\")\n  tag: String,\n)").unwrap();
+        assert_eq!(schema.root.fields[0].annotations[0].value, FieldAnnotation::Pattern("[a-z]+".to_string()));
+    }
+
+    // Invalid regex rejected at parse time.
+    #[cfg(feature = "regex")]
+    #[test]
+    fn parse_pattern_invalid_regex_rejected() {
+        let err = parse_schema("(\n  @pattern(\"[invalid\")\n  tag: String,\n)").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::UnexpectedToken { .. }));
+    }
+
+    // Multiple annotations on one field.
+    #[test]
+    fn parse_multiple_annotations_on_field() {
+        let schema = parse_schema("(\n  @min_length(1)\n  @max_length(50)\n  name: String,\n)").unwrap();
+        assert_eq!(schema.root.fields[0].annotations.len(), 2);
+        assert_eq!(schema.root.fields[0].annotations[0].value, FieldAnnotation::MinLength(1));
+        assert_eq!(schema.root.fields[0].annotations[1].value, FieldAnnotation::MaxLength(50));
+    }
+
+    // Annotations only apply to the next field.
+    #[test]
+    fn annotations_only_apply_to_next_field() {
+        let schema = parse_schema("(\n  @range(0, 10)\n  x: Integer,\n  y: Integer,\n)").unwrap();
+        assert_eq!(schema.root.fields[0].annotations.len(), 1);
+        assert!(schema.root.fields[1].annotations.is_empty());
+    }
+
+    // Unknown annotation name is rejected.
+    #[test]
+    fn parse_unknown_annotation_rejected() {
+        let err = parse_schema("(\n  @foobar(1)\n  x: Integer,\n)").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::UnexpectedToken { .. }));
+    }
+
+    // Annotation without a following field is rejected.
+    #[test]
+    fn parse_annotation_without_field_rejected() {
+        let err = parse_schema("(\n  @range(0, 10)\n)").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::UnexpectedToken { .. }));
+    }
+
+    // Annotation has correct span.
+    #[test]
+    fn parse_annotation_has_span() {
+        let schema = parse_schema("(\n  @range(0, 100)\n  health: Integer,\n)").unwrap();
+        assert_eq!(schema.root.fields[0].annotations[0].span.start.line, 2);
+    }
+
+    // ========================================================
+    // Annotation parsing — struct annotations (@require)
+    // ========================================================
+
+    // @require with <= operator.
+    #[test]
+    fn parse_require_le() {
+        let schema = parse_schema("(\n  @require(min <= max)\n  min: Integer,\n  max: Integer,\n)").unwrap();
+        assert_eq!(schema.root.annotations.len(), 1);
+        assert_eq!(schema.root.annotations[0].value.left, "min");
+        assert_eq!(schema.root.annotations[0].value.op, CompareOp::Le);
+        assert_eq!(schema.root.annotations[0].value.right, "max");
+    }
+
+    // @require with < operator.
+    #[test]
+    fn parse_require_lt() {
+        let schema = parse_schema("(\n  @require(start < end)\n  start: Integer,\n  end: Integer,\n)").unwrap();
+        assert_eq!(schema.root.annotations[0].value.op, CompareOp::Lt);
+    }
+
+    // @require with > operator.
+    #[test]
+    fn parse_require_gt() {
+        let schema = parse_schema("(\n  @require(a > b)\n  a: Integer,\n  b: Integer,\n)").unwrap();
+        assert_eq!(schema.root.annotations[0].value.op, CompareOp::Gt);
+    }
+
+    // @require with >= operator.
+    #[test]
+    fn parse_require_ge() {
+        let schema = parse_schema("(\n  @require(a >= b)\n  a: Integer,\n  b: Integer,\n)").unwrap();
+        assert_eq!(schema.root.annotations[0].value.op, CompareOp::Ge);
+    }
+
+    // @require with == operator.
+    #[test]
+    fn parse_require_eq() {
+        let schema = parse_schema("(\n  @require(a == b)\n  a: Integer,\n  b: Integer,\n)").unwrap();
+        assert_eq!(schema.root.annotations[0].value.op, CompareOp::Eq);
+    }
+
+    // @require with != operator.
+    #[test]
+    fn parse_require_ne() {
+        let schema = parse_schema("(\n  @require(a != b)\n  a: Integer,\n  b: Integer,\n)").unwrap();
+        assert_eq!(schema.root.annotations[0].value.op, CompareOp::Ne);
+    }
+
+    // Multiple @require constraints.
+    #[test]
+    fn parse_multiple_require() {
+        let schema = parse_schema("(\n  @require(min <= max)\n  @require(start < end)\n  min: Integer,\n  max: Integer,\n  start: Integer,\n  end: Integer,\n)").unwrap();
+        assert_eq!(schema.root.annotations.len(), 2);
+    }
+
+    // @require after field annotations is rejected.
+    #[test]
+    fn parse_require_after_field_annotation_rejected() {
+        let err = parse_schema("(\n  @range(0, 10)\n  @require(a <= b)\n  a: Integer,\n  b: Integer,\n)").unwrap_err();
+        assert!(matches!(err.kind, SchemaErrorKind::UnexpectedToken { .. }));
+    }
+
+    // @require has correct span.
+    #[test]
+    fn parse_require_has_span() {
+        let schema = parse_schema("(\n  @require(min <= max)\n  min: Integer,\n  max: Integer,\n)").unwrap();
+        assert_eq!(schema.root.annotations[0].span.start.line, 2);
+    }
+
+    // Annotations work alongside defaults.
+    #[test]
+    fn parse_annotation_with_default() {
+        let schema = parse_schema("(\n  @range(0, 100)\n  health: Integer = 50,\n)").unwrap();
+        assert_eq!(schema.root.fields[0].annotations[0].value, FieldAnnotation::Range(0.0, 100.0));
+        assert!(schema.root.fields[0].default.is_some());
+    }
+
+    // Annotations work in nested structs.
+    #[test]
+    fn parse_annotation_in_nested_struct() {
+        let schema = parse_schema("(\n  inner: (\n    @range(0, 10)\n    value: Integer,\n  ),\n)").unwrap();
+        if let SchemaType::Struct(inner) = &schema.root.fields[0].type_.value {
+            assert_eq!(inner.fields[0].annotations[0].value, FieldAnnotation::Range(0.0, 10.0));
+        } else {
+            panic!("expected nested struct");
+        }
     }
 }

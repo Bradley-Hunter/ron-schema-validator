@@ -133,6 +133,11 @@ fn error_code(kind: &ErrorKind) -> &'static str {
         ErrorKind::ExpectedTuple { .. } => "expected-tuple",
         ErrorKind::TupleLengthMismatch { .. } => "tuple-length",
         ErrorKind::InvalidTupleElement { .. } => "invalid-tuple-element",
+        ErrorKind::ValueOutOfRange { .. } => "value-out-of-range",
+        ErrorKind::LengthTooShort { .. } => "length-too-short",
+        ErrorKind::LengthTooLong { .. } => "length-too-long",
+        ErrorKind::PatternMismatch { .. } => "pattern-mismatch",
+        ErrorKind::CrossFieldViolation { .. } => "cross-field-violation",
     }
 }
 
@@ -190,6 +195,21 @@ fn error_message(error: &ValidationError) -> String {
         ErrorKind::InvalidTupleElement { index, expected, found } => {
             format!("field `{}`: element {} expected {}, found {}", error.path, index, expected, found)
         }
+        ErrorKind::ValueOutOfRange { field_name, min, max, found } => {
+            format!("field `{}`: value {} is outside range [{}, {}]", field_name, found, min, max)
+        }
+        ErrorKind::LengthTooShort { field_name, min, found } => {
+            format!("field `{}`: length {} is below minimum {}", field_name, found, min)
+        }
+        ErrorKind::LengthTooLong { field_name, max, found } => {
+            format!("field `{}`: length {} exceeds maximum {}", field_name, found, max)
+        }
+        ErrorKind::PatternMismatch { field_name, pattern } => {
+            format!("field `{}`: value does not match pattern \"{}\"", field_name, pattern)
+        }
+        ErrorKind::CrossFieldViolation { constraint } => {
+            format!("constraint `{}` is not satisfied", constraint)
+        }
     }
 }
 
@@ -216,6 +236,11 @@ fn underline_label(kind: &ErrorKind) -> String {
         ErrorKind::ExpectedTuple { .. } => "expected tuple".to_string(),
         ErrorKind::TupleLengthMismatch { expected, .. } => format!("expected {expected} elements"),
         ErrorKind::InvalidTupleElement { expected, .. } => format!("expected {expected}"),
+        ErrorKind::ValueOutOfRange { min, max, .. } => format!("must be between {min} and {max}"),
+        ErrorKind::LengthTooShort { min, .. } => format!("minimum length {min}"),
+        ErrorKind::LengthTooLong { max, .. } => format!("maximum length {max}"),
+        ErrorKind::PatternMismatch { pattern, .. } => format!("must match \"{pattern}\""),
+        ErrorKind::CrossFieldViolation { constraint } => format!("requires {constraint}"),
     }
 }
 

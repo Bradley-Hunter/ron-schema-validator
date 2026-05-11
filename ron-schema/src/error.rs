@@ -125,7 +125,7 @@ pub enum RonErrorKind {
 }
 
 /// Specific kinds of validation errors produced when RON data does not match a schema.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ErrorKind {
     /// A required field defined in the schema is absent from the data.
     MissingField {
@@ -239,6 +239,47 @@ pub enum ErrorKind {
         /// A description of what was actually found.
         found: String,
     },
+    /// A numeric value is outside the range specified by `@range(min, max)`.
+    ValueOutOfRange {
+        /// The field name.
+        field_name: String,
+        /// The minimum allowed value.
+        min: f64,
+        /// The maximum allowed value.
+        max: f64,
+        /// The actual value found.
+        found: f64,
+    },
+    /// A string or list is shorter than the minimum length specified by `@min_length(n)`.
+    LengthTooShort {
+        /// The field name.
+        field_name: String,
+        /// The minimum length required.
+        min: usize,
+        /// The actual length found.
+        found: usize,
+    },
+    /// A string or list is longer than the maximum length specified by `@max_length(n)`.
+    LengthTooLong {
+        /// The field name.
+        field_name: String,
+        /// The maximum length allowed.
+        max: usize,
+        /// The actual length found.
+        found: usize,
+    },
+    /// A string value does not match the regex specified by `@pattern("...")`.
+    PatternMismatch {
+        /// The field name.
+        field_name: String,
+        /// The pattern that was expected to match.
+        pattern: String,
+    },
+    /// A `@require` cross-field constraint was violated.
+    CrossFieldViolation {
+        /// A human-readable description of the violated constraint (e.g., `"min <= max"`).
+        constraint: String,
+    },
 }
 
 /// An error produced when parsing a `.ronschema` file fails.
@@ -260,7 +301,7 @@ pub struct RonParseError {
 }
 
 /// An error produced when RON data does not conform to a schema.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ValidationError {
     /// Dot/bracket field path to the problematic value (e.g., `"cost.generic"`, `"card_types[0]"`).
     pub path: String,

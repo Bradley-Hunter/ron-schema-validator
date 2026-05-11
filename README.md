@@ -4,7 +4,7 @@ Schema validation for [RON (Rusty Object Notation)](https://github.com/ron-rs/ro
 
 RON has no equivalent of JSON Schema. This project fills that gap.
 
-> **Status:** v0.9 — Schema parser, RON parser, validator, and CLI are all functional with test coverage. JSON output, default field values, warnings, and schema imports available.
+> **Status:** v0.10 — Schema parser, RON parser, validator, and CLI are all functional with test coverage. JSON output, default field values, warnings, schema imports, and custom validation annotations available.
 
 ## Schema Format
 
@@ -125,6 +125,50 @@ import "shared-types.ronschema"
 ```
 
 Import paths are resolved relative to the importing schema's directory. Circular imports and name collisions between imported and local types are reported as parse errors. Import nesting is limited to 10 levels.
+
+### Annotations
+
+Add value-level constraints with annotations placed before the field:
+
+```
+(
+  @range(0, 100)
+  health: Integer,
+
+  @min_length(1)
+  @max_length(50)
+  name: String,
+
+  @pattern("^[a-z_]+$")
+  tag: String,
+)
+```
+
+| Annotation | Applies to | Checks |
+|------------|-----------|--------|
+| `@range(min, max)` | Integer, Float | Value is within bounds (inclusive) |
+| `@min_length(n)` | String, List | Length is at least `n` |
+| `@max_length(n)` | String, List | Length is at most `n` |
+| `@pattern("regex")` | String | Value matches the regex pattern |
+
+`@pattern` requires the `regex` cargo feature:
+```toml
+ron-schema = { version = "0.10", features = ["regex"] }
+```
+
+#### Cross-field constraints
+
+Use `@require` inside a struct to enforce relationships between fields:
+
+```
+(
+  @require(min <= max)
+  min: Integer,
+  max: Integer,
+)
+```
+
+Supported operators: `<`, `<=`, `>`, `>=`, `==`, `!=`. Comparisons work on Integer and Float fields. Fields with defaults use their default value when absent.
 
 ### Maps
 
@@ -286,8 +330,15 @@ Requires Rust 2021 edition.
 - [x] Circular import detection with 10-level nesting cap
 - [x] Name collision detection between imports and local types
 
+### v0.10 — Custom Validation Rules (Annotations)
+
+- [x] `@range(min, max)` for numeric bounds
+- [x] `@min_length(n)` and `@max_length(n)` for string/list length
+- [x] `@pattern("regex")` for string matching (feature-gated behind `regex`)
+- [x] `@require(field op field)` for cross-field constraints
+- [x] Parse-time validation of annotation arguments
+
 ### Future
-- [ ] Custom validation rules (value ranges, string patterns)
 - [ ] `init` subcommand (schema inference)
 
 ## Design Decisions
@@ -298,7 +349,7 @@ Requires Rust 2021 edition.
 | Custom RON parser | The `ron` crate's `Value` type discards bare identifier names, making enum validation impossible. |
 | All fields required by default | Mirrors Rust semantics. `Option(T)` controls the value, not whether the field can be absent. |
 | Collect all errors | Primary use case is batch-validating many files. Users need all problems at once. |
-| Zero library dependencies | The library crate has no external dependencies. |
+| Zero default dependencies | The library crate has no required dependencies. `regex` is opt-in via a feature flag. |
 
 ## License
 

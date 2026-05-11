@@ -18,7 +18,7 @@ pub fn validate(schema: &Schema, value: &Spanned<RonValue>) -> ValidationResult 
     ValidationResult { errors, warnings }
 }
 use crate::ron::RonValue;
-use crate::schema::{EnumDef, Schema, SchemaType, StructDef};
+use crate::schema::{CompareOp, EnumDef, FieldAnnotation, Schema, SchemaType, StructDef};
 use crate::span::{Span, Spanned};
 
 /// Produces a human-readable description of a RON value for error messages.
@@ -309,12 +309,127 @@ fn validate_type(
     }
 }
 
+/// Checks a field's annotations against its actual value.
+#[allow(clippy::cast_precision_loss)]
+fn validate_field_annotations(
+    annotations: &[Spanned<FieldAnnotation>],
+    field_name: &str,
+    actual: &Spanned<RonValue>,
+    errors: &mut Vec<ValidationError>,
+) {
+    for ann in annotations {
+        match &ann.value {
+            FieldAnnotation::Range(min, max) => {
+                let numeric_value = match &actual.value {
+                    RonValue::Integer(n) => Some(*n as f64),
+                    RonValue::Float(f) => Some(*f),
+                    _ => None,
+                };
+                if let Some(v) = numeric_value {
+                    if v < *min || v > *max {
+                        errors.push(ValidationError {
+                            path: field_name.to_string(),
+                            span: actual.span,
+                            kind: ErrorKind::ValueOutOfRange {
+                                field_name: field_name.to_string(),
+                                min: *min,
+                                max: *max,
+                                found: v,
+                            },
+                        });
+                    }
+                }
+            }
+            FieldAnnotation::MinLength(min) => {
+                let len = match &actual.value {
+                    RonValue::String(s) => Some(s.len()),
+                    RonValue::List(items) => Some(items.len()),
+                    _ => None,
+                };
+                if let Some(l) = len {
+                    if l < *min {
+                        errors.push(ValidationError {
+                            path: field_name.to_string(),
+                            span: actual.span,
+                            kind: ErrorKind::LengthTooShort {
+                                field_name: field_name.to_string(),
+                                min: *min,
+                                found: l,
+                            },
+                        });
+                    }
+                }
+            }
+            FieldAnnotation::MaxLength(max) => {
+                let len = match &actual.value {
+                    RonValue::String(s) => Some(s.len()),
+                    RonValue::List(items) => Some(items.len()),
+                    _ => None,
+                };
+                if let Some(l) = len {
+                    if l > *max {
+                        errors.push(ValidationError {
+                            path: field_name.to_string(),
+                            span: actual.span,
+                            kind: ErrorKind::LengthTooLong {
+                                field_name: field_name.to_string(),
+                                max: *max,
+                                found: l,
+                            },
+                        });
+                    }
+                }
+            }
+            FieldAnnotation::Pattern(pattern) => {
+                #[cfg(feature = "regex")]
+                if let RonValue::String(s) = &actual.value {
+                    if let Ok(re) = regex::Regex::new(pattern) {
+                        if !re.is_match(s) {
+                            errors.push(ValidationError {
+                                path: field_name.to_string(),
+                                span: actual.span,
+                                kind: ErrorKind::PatternMismatch {
+                                    field_name: field_name.to_string(),
+                                    pattern: pattern.clone(),
+                                },
+                            });
+                        }
+                    }
+                }
+                #[cfg(not(feature = "regex"))]
+                let _ = pattern;
+            }
+        }
+    }
+}
+
+/// Compares two RON values using a comparison operator.
+#[allow(clippy::cast_precision_loss)]
+fn compare_values(left: &RonValue, right: &RonValue, op: CompareOp) -> Option<bool> {
+    let (l, r) = match (left, right) {
+        (RonValue::Integer(a), RonValue::Integer(b)) => (*a as f64, *b as f64),
+        (RonValue::Float(a), RonValue::Float(b)) => (*a, *b),
+        (RonValue::Integer(a), RonValue::Float(b)) => (*a as f64, *b),
+        (RonValue::Float(a), RonValue::Integer(b)) => (*a, *b as f64),
+        _ => return None,
+    };
+    Some(match op {
+        CompareOp::Lt => l < r,
+        CompareOp::Le => l <= r,
+        CompareOp::Gt => l > r,
+        CompareOp::Ge => l >= r,
+        CompareOp::Eq => (l - r).abs() < f64::EPSILON,
+        CompareOp::Ne => (l - r).abs() >= f64::EPSILON,
+    })
+}
+
 /// Validates a RON struct against a schema struct definition.
 ///
 /// Three checks:
 /// 1. Missing fields — in schema but not in data (points to closing paren)
 /// 2. Unknown fields — in data but not in schema (points to field name)
 /// 3. Matching fields — present in both, recurse into `validate_type`
+#[allow(clippy::too_many_lines)]
 fn validate_struct(
     struct_def: &StructDef,
     actual: &Spanned<RonValue>,
@@ -376,11 +491,14 @@ fn validate_struct(
         }
     }
 
-    // 3. Matching fields: validate each against its expected type
+    // 3. Matching fields: validate each against its expected type, then check annotations
     for field_def in &struct_def.fields {
         if let Some(data_value) = data_map.get(field_def.name.value.as_str()) {
             let field_path = build_path(path, &field_def.name.value);
             validate_type(&field_def.type_.value, data_value, &field_path, errors, warnings, enums, aliases);
+            if !field_def.annotations.is_empty() {
+                validate_field_annotations(&field_def.annotations, &field_path, data_value, errors);
+            }
         }
     }
 
@@ -408,6 +526,46 @@ fn validate_struct(
             } else {
                 last_schema_index = schema_index;
             }
+        }
+    }
+
+    // 5. @require constraints: cross-field comparisons
+    for ann in &struct_def.annotations {
+        let left_name = &ann.value.left;
+        let right_name = &ann.value.right;
+
+        let default_map: HashMap<&str, &RonValue> = struct_def.fields.iter()
+            .filter_map(|f| f.default.as_ref().map(|d| (f.name.value.as_str(), &d.value)))
+            .collect();
+
+        let left_val = data_map.get(left_name.as_str())
+            .map(|v| &v.value)
+            .or_else(|| default_map.get(left_name.as_str()).copied());
+        let right_val = data_map.get(right_name.as_str())
+            .map(|v| &v.value)
+            .or_else(|| default_map.get(right_name.as_str()).copied());
+
+        let (Some(lv), Some(rv)) = (left_val, right_val) else {
+            continue;
+        };
+
+        let result = compare_values(lv, rv, ann.value.op);
+        if result == Some(false) {
+            let op_str = match ann.value.op {
+                CompareOp::Lt => "<",
+                CompareOp::Le => "<=",
+                CompareOp::Gt => ">",
+                CompareOp::Ge => ">=",
+                CompareOp::Eq => "==",
+                CompareOp::Ne => "!=",
+            };
+            errors.push(ValidationError {
+                path: path.to_string(),
+                span: actual.span,
+                kind: ErrorKind::CrossFieldViolation {
+                    constraint: format!("{left_name} {op_str} {right_name}"),
+                },
+            });
         }
     }
 }
@@ -1224,5 +1382,419 @@ mod tests {
         let errs = validate_str(schema, data);
         assert_eq!(errs.len(), 1);
         assert!(matches!(&errs[0].kind, ErrorKind::InvalidVariantData { .. }));
+    }
+
+    // ========================================================
+    // @range annotation
+    // ========================================================
+
+    // Integer within range passes.
+    #[test]
+    fn range_integer_within_bounds() {
+        let errs = validate_str("(\n  @range(0, 100)\n  health: Integer,\n)", "(health: 50)");
+        assert!(errs.is_empty());
+    }
+
+    // Integer at lower bound passes.
+    #[test]
+    fn range_integer_at_min() {
+        let errs = validate_str("(\n  @range(0, 100)\n  health: Integer,\n)", "(health: 0)");
+        assert!(errs.is_empty());
+    }
+
+    // Integer at upper bound passes.
+    #[test]
+    fn range_integer_at_max() {
+        let errs = validate_str("(\n  @range(0, 100)\n  health: Integer,\n)", "(health: 100)");
+        assert!(errs.is_empty());
+    }
+
+    // Integer below range fails.
+    #[test]
+    fn range_integer_below_min() {
+        let errs = validate_str("(\n  @range(0, 100)\n  health: Integer,\n)", "(health: -1)");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::ValueOutOfRange { .. }));
+    }
+
+    // Integer above range fails.
+    #[test]
+    fn range_integer_above_max() {
+        let errs = validate_str("(\n  @range(0, 100)\n  health: Integer,\n)", "(health: 101)");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::ValueOutOfRange { .. }));
+    }
+
+    // Float within range passes.
+    #[test]
+    fn range_float_within_bounds() {
+        let errs = validate_str("(\n  @range(0.0, 1.0)\n  ratio: Float,\n)", "(ratio: 0.5)");
+        assert!(errs.is_empty());
+    }
+
+    // Float below range fails.
+    #[test]
+    fn range_float_below_min() {
+        let errs = validate_str("(\n  @range(0.0, 1.0)\n  ratio: Float,\n)", "(ratio: -0.1)");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::ValueOutOfRange { .. }));
+    }
+
+    // Negative range bounds work.
+    #[test]
+    fn range_negative_bounds() {
+        let errs = validate_str("(\n  @range(-50, 50)\n  offset: Integer,\n)", "(offset: -50)");
+        assert!(errs.is_empty());
+    }
+
+    // Range error contains correct field name.
+    #[test]
+    fn range_error_has_field_name() {
+        let errs = validate_str("(\n  @range(0, 100)\n  health: Integer,\n)", "(health: 200)");
+        if let ErrorKind::ValueOutOfRange { field_name, .. } = &errs[0].kind {
+            assert_eq!(field_name, "health");
+        } else {
+            panic!("expected ValueOutOfRange");
+        }
+    }
+
+    // Range error contains correct bounds and found value.
+    #[test]
+    fn range_error_has_bounds_and_value() {
+        let errs = validate_str("(\n  @range(0, 100)\n  health: Integer,\n)", "(health: 200)");
+        if let ErrorKind::ValueOutOfRange { min, max, found, .. } = &errs[0].kind {
+            assert_eq!(*min, 0.0);
+            assert_eq!(*max, 100.0);
+            assert_eq!(*found, 200.0);
+        } else {
+            panic!("expected ValueOutOfRange");
+        }
+    }
+
+    // ========================================================
+    // @min_length annotation
+    // ========================================================
+
+    // String meeting min_length passes.
+    #[test]
+    fn min_length_string_passes() {
+        let errs = validate_str("(\n  @min_length(3)\n  name: String,\n)", "(name: \"abc\")");
+        assert!(errs.is_empty());
+    }
+
+    // String shorter than min_length fails.
+    #[test]
+    fn min_length_string_fails() {
+        let errs = validate_str("(\n  @min_length(3)\n  name: String,\n)", "(name: \"ab\")");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::LengthTooShort { .. }));
+    }
+
+    // List meeting min_length passes.
+    #[test]
+    fn min_length_list_passes() {
+        let errs = validate_str("(\n  @min_length(2)\n  tags: [String],\n)", "(tags: [\"a\", \"b\"])");
+        assert!(errs.is_empty());
+    }
+
+    // List shorter than min_length fails.
+    #[test]
+    fn min_length_list_fails() {
+        let errs = validate_str("(\n  @min_length(2)\n  tags: [String],\n)", "(tags: [\"a\"])");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::LengthTooShort { .. }));
+    }
+
+    // min_length error contains correct values.
+    #[test]
+    fn min_length_error_has_values() {
+        let errs = validate_str("(\n  @min_length(3)\n  name: String,\n)", "(name: \"ab\")");
+        if let ErrorKind::LengthTooShort { min, found, .. } = &errs[0].kind {
+            assert_eq!(*min, 3);
+            assert_eq!(*found, 2);
+        } else {
+            panic!("expected LengthTooShort");
+        }
+    }
+
+    // ========================================================
+    // @max_length annotation
+    // ========================================================
+
+    // String within max_length passes.
+    #[test]
+    fn max_length_string_passes() {
+        let errs = validate_str("(\n  @max_length(5)\n  name: String,\n)", "(name: \"abc\")");
+        assert!(errs.is_empty());
+    }
+
+    // String exceeding max_length fails.
+    #[test]
+    fn max_length_string_fails() {
+        let errs = validate_str("(\n  @max_length(3)\n  name: String,\n)", "(name: \"abcd\")");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::LengthTooLong { .. }));
+    }
+
+    // List exceeding max_length fails.
+    #[test]
+    fn max_length_list_fails() {
+        let errs = validate_str("(\n  @max_length(2)\n  tags: [String],\n)", "(tags: [\"a\", \"b\", \"c\"])");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::LengthTooLong { .. }));
+    }
+
+    // max_length error contains correct values.
+    #[test]
+    fn max_length_error_has_values() {
+        let errs = validate_str("(\n  @max_length(3)\n  name: String,\n)", "(name: \"abcde\")");
+        if let ErrorKind::LengthTooLong { max, found, .. } = &errs[0].kind {
+            assert_eq!(*max, 3);
+            assert_eq!(*found, 5);
+        } else {
+            panic!("expected LengthTooLong");
+        }
+    }
+
+    // ========================================================
+    // Multiple annotations on one field
+    // ========================================================
+
+    // Both min and max length on same field — passes.
+    #[test]
+    fn min_and_max_length_passes() {
+        let errs = validate_str("(\n  @min_length(1)\n  @max_length(10)\n  name: String,\n)", "(name: \"hello\")");
+        assert!(errs.is_empty());
+    }
+
+    // Both min and max length on same field — too short.
+    #[test]
+    fn min_and_max_length_too_short() {
+        let errs = validate_str("(\n  @min_length(3)\n  @max_length(10)\n  name: String,\n)", "(name: \"ab\")");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::LengthTooShort { .. }));
+    }
+
+    // Both min and max length on same field — too long.
+    #[test]
+    fn min_and_max_length_too_long() {
+        let errs = validate_str("(\n  @min_length(1)\n  @max_length(3)\n  name: String,\n)", "(name: \"abcde\")");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::LengthTooLong { .. }));
+    }
+
+    // Annotation on field that doesn't match type is silently ignored.
+    #[test]
+    fn range_on_string_field_ignored() {
+        let errs = validate_str("(\n  @range(0, 100)\n  name: String,\n)", "(name: \"hello\")");
+        assert!(errs.is_empty());
+    }
+
+    // Annotation not checked when field has type mismatch.
+    #[test]
+    fn annotation_skipped_on_type_mismatch() {
+        let errs = validate_str("(\n  @range(0, 100)\n  health: Integer,\n)", "(health: \"hello\")");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::TypeMismatch { .. }));
+    }
+
+    // ========================================================
+    // @pattern annotation (requires regex feature)
+    // ========================================================
+
+    // String matching pattern passes.
+    #[cfg(feature = "regex")]
+    #[test]
+    fn pattern_matching_string_passes() {
+        let errs = validate_str("(\n  @pattern(\"^[a-z]+$\")\n  tag: String,\n)", "(tag: \"hello\")");
+        assert!(errs.is_empty());
+    }
+
+    // String not matching pattern fails.
+    #[cfg(feature = "regex")]
+    #[test]
+    fn pattern_non_matching_string_fails() {
+        let errs = validate_str("(\n  @pattern(\"^[a-z]+$\")\n  tag: String,\n)", "(tag: \"Hello123\")");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::PatternMismatch { .. }));
+    }
+
+    // Pattern error contains correct field name and pattern.
+    #[cfg(feature = "regex")]
+    #[test]
+    fn pattern_error_has_field_and_pattern() {
+        let errs = validate_str("(\n  @pattern(\"^[0-9]+$\")\n  code: String,\n)", "(code: \"abc\")");
+        if let ErrorKind::PatternMismatch { field_name, pattern } = &errs[0].kind {
+            assert_eq!(field_name, "code");
+            assert_eq!(pattern, "^[0-9]+$");
+        } else {
+            panic!("expected PatternMismatch");
+        }
+    }
+
+    // Pattern on non-string field is silently ignored.
+    #[cfg(feature = "regex")]
+    #[test]
+    fn pattern_on_integer_field_ignored() {
+        let errs = validate_str("(\n  @pattern(\"^[0-9]+$\")\n  count: Integer,\n)", "(count: 42)");
+        assert!(errs.is_empty());
+    }
+
+    // ========================================================
+    // @require annotation
+    // ========================================================
+
+    // Satisfied <= constraint passes.
+    #[test]
+    fn require_le_satisfied() {
+        let schema = "(\n  @require(min <= max)\n  min: Integer,\n  max: Integer,\n)";
+        let errs = validate_str(schema, "(min: 5, max: 10)");
+        assert!(errs.is_empty());
+    }
+
+    // Equal values satisfy <=.
+    #[test]
+    fn require_le_equal_satisfied() {
+        let schema = "(\n  @require(min <= max)\n  min: Integer,\n  max: Integer,\n)";
+        let errs = validate_str(schema, "(min: 5, max: 5)");
+        assert!(errs.is_empty());
+    }
+
+    // Violated <= constraint fails.
+    #[test]
+    fn require_le_violated() {
+        let schema = "(\n  @require(min <= max)\n  min: Integer,\n  max: Integer,\n)";
+        let errs = validate_str(schema, "(min: 10, max: 5)");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::CrossFieldViolation { .. }));
+    }
+
+    // Satisfied < constraint passes.
+    #[test]
+    fn require_lt_satisfied() {
+        let schema = "(\n  @require(start < end)\n  start: Integer,\n  end: Integer,\n)";
+        let errs = validate_str(schema, "(start: 1, end: 10)");
+        assert!(errs.is_empty());
+    }
+
+    // Equal values violate <.
+    #[test]
+    fn require_lt_equal_violated() {
+        let schema = "(\n  @require(start < end)\n  start: Integer,\n  end: Integer,\n)";
+        let errs = validate_str(schema, "(start: 5, end: 5)");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::CrossFieldViolation { .. }));
+    }
+
+    // Satisfied == constraint passes.
+    #[test]
+    fn require_eq_satisfied() {
+        let schema = "(\n  @require(a == b)\n  a: Integer,\n  b: Integer,\n)";
+        let errs = validate_str(schema, "(a: 5, b: 5)");
+        assert!(errs.is_empty());
+    }
+
+    // Violated == constraint fails.
+    #[test]
+    fn require_eq_violated() {
+        let schema = "(\n  @require(a == b)\n  a: Integer,\n  b: Integer,\n)";
+        let errs = validate_str(schema, "(a: 5, b: 10)");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::CrossFieldViolation { .. }));
+    }
+
+    // Satisfied != constraint passes.
+    #[test]
+    fn require_ne_satisfied() {
+        let schema = "(\n  @require(a != b)\n  a: Integer,\n  b: Integer,\n)";
+        let errs = validate_str(schema, "(a: 5, b: 10)");
+        assert!(errs.is_empty());
+    }
+
+    // Violated != constraint fails.
+    #[test]
+    fn require_ne_violated() {
+        let schema = "(\n  @require(a != b)\n  a: Integer,\n  b: Integer,\n)";
+        let errs = validate_str(schema, "(a: 5, b: 5)");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::CrossFieldViolation { .. }));
+    }
+
+    // CrossFieldViolation error contains constraint string.
+    #[test]
+    fn require_error_has_constraint() {
+        let schema = "(\n  @require(min <= max)\n  min: Integer,\n  max: Integer,\n)";
+        let errs = validate_str(schema, "(min: 10, max: 5)");
+        if let ErrorKind::CrossFieldViolation { constraint } = &errs[0].kind {
+            assert_eq!(constraint, "min <= max");
+        } else {
+            panic!("expected CrossFieldViolation");
+        }
+    }
+
+    // @require with float fields.
+    #[test]
+    fn require_float_comparison() {
+        let schema = "(\n  @require(low < high)\n  low: Float,\n  high: Float,\n)";
+        let errs = validate_str(schema, "(low: 1.5, high: 2.5)");
+        assert!(errs.is_empty());
+    }
+
+    // @require with mixed integer and float fields.
+    #[test]
+    fn require_mixed_int_float() {
+        let schema = "(\n  @require(count <= limit)\n  count: Integer,\n  limit: Float,\n)";
+        let errs = validate_str(schema, "(count: 5, limit: 10.0)");
+        assert!(errs.is_empty());
+    }
+
+    // @require skipped when field is missing (missing field error takes priority).
+    #[test]
+    fn require_skipped_when_field_missing() {
+        let schema = "(\n  @require(min <= max)\n  min: Integer,\n  max: Integer,\n)";
+        let errs = validate_str(schema, "(min: 5)");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::MissingField { .. }));
+    }
+
+    // @require uses default value for absent field.
+    #[test]
+    fn require_uses_default_for_absent_field() {
+        let schema = "(\n  @require(min <= max)\n  min: Integer,\n  max: Integer = 100,\n)";
+        let errs = validate_str(schema, "(min: 5)");
+        assert!(errs.is_empty());
+    }
+
+    // @require violated with default value.
+    #[test]
+    fn require_violated_with_default() {
+        let schema = "(\n  @require(min <= max)\n  min: Integer,\n  max: Integer = 0,\n)";
+        let errs = validate_str(schema, "(min: 5)");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0].kind, ErrorKind::CrossFieldViolation { .. }));
+    }
+
+    // Multiple @require constraints both checked.
+    #[test]
+    fn require_multiple_constraints() {
+        let schema = "(\n  @require(a < b)\n  @require(b < c)\n  a: Integer,\n  b: Integer,\n  c: Integer,\n)";
+        let errs = validate_str(schema, "(a: 1, b: 2, c: 3)");
+        assert!(errs.is_empty());
+    }
+
+    // Multiple @require constraints — both violated.
+    #[test]
+    fn require_multiple_constraints_both_violated() {
+        let schema = "(\n  @require(a < b)\n  @require(b < c)\n  a: Integer,\n  b: Integer,\n  c: Integer,\n)";
+        let errs = validate_str(schema, "(a: 3, b: 2, c: 1)");
+        assert_eq!(errs.len(), 2);
+    }
+
+    // @require on non-numeric fields is skipped.
+    #[test]
+    fn require_non_numeric_skipped() {
+        let schema = "(\n  @require(a <= b)\n  a: String,\n  b: String,\n)";
+        let errs = validate_str(schema, "(a: \"hello\", b: \"world\")");
+        assert!(errs.is_empty());
     }
 }

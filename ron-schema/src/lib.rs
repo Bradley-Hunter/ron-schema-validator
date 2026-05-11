@@ -17,7 +17,7 @@ pub mod resolve;
 
 // Re-exports — these are the public API
 pub use span::{Position, Span, Spanned};
-pub use schema::{Schema, StructDef, FieldDef, SchemaType, EnumDef};
+pub use schema::{Schema, StructDef, FieldDef, SchemaType, EnumDef, CompareOp, FieldAnnotation, StructAnnotation};
 pub use schema::parser::parse_schema;
 pub use ron::{RonValue, RonStruct};
 pub use ron::parser::parse_ron;

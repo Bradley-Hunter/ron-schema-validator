@@ -47,6 +47,47 @@ pub enum SchemaType {
     Struct(StructDef),
 }
 
+/// A comparison operator for `@require` constraints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareOp {
+    /// `<`
+    Lt,
+    /// `<=`
+    Le,
+    /// `>`
+    Gt,
+    /// `>=`
+    Ge,
+    /// `==`
+    Eq,
+    /// `!=`
+    Ne,
+}
+
+/// An annotation on a single field (e.g., `@range`, `@min_length`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldAnnotation {
+    /// `@range(min, max)` — numeric bounds for Integer or Float fields.
+    Range(f64, f64),
+    /// `@min_length(n)` — minimum length for String or List fields.
+    MinLength(usize),
+    /// `@max_length(n)` — maximum length for String or List fields.
+    MaxLength(usize),
+    /// `@pattern("regex")` — regex pattern for String fields (requires `regex` feature).
+    Pattern(String),
+}
+
+/// An annotation on a struct (e.g., `@require`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructAnnotation {
+    /// The left-hand field name.
+    pub left: String,
+    /// The comparison operator.
+    pub op: CompareOp,
+    /// The right-hand field name.
+    pub right: String,
+}
+
 /// A single field definition within a struct.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldDef {
@@ -56,6 +97,8 @@ pub struct FieldDef {
     pub type_: Spanned<SchemaType>,
     /// An optional default value. Fields with defaults are not required in data.
     pub default: Option<Spanned<RonValue>>,
+    /// Validation annotations attached to this field.
+    pub annotations: Vec<Spanned<FieldAnnotation>>,
 }
 
 /// A struct definition containing an ordered list of field definitions.
@@ -63,6 +106,8 @@ pub struct FieldDef {
 pub struct StructDef {
     /// Ordered list of fields. Uses `Vec` to preserve declaration order for error messages.
     pub fields: Vec<FieldDef>,
+    /// Struct-level `@require` constraints.
+    pub annotations: Vec<Spanned<StructAnnotation>>,
 }
 
 /// The top-level schema produced by parsing a `.ronschema` file.
