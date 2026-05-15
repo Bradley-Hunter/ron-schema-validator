@@ -14,6 +14,10 @@ pub mod error;
 pub mod diagnostic;
 /// Import resolution for schema composition.
 pub mod resolve;
+/// Schema-to-text formatting for `.ronschema` output.
+pub mod format;
+/// Schema inference from RON data.
+pub mod infer;
 
 // Re-exports — these are the public API
 pub use span::{Position, Span, Spanned};
@@ -25,3 +29,5 @@ pub use validate::validate;
 pub use resolve::{SchemaResolver, resolve_imports};
 pub use error::{ValidationError, ErrorKind, ValidationResult, Warning, WarningKind, SchemaParseError, SchemaErrorKind, RonParseError, RonErrorKind};
 pub use diagnostic::{extract_source_line, SourceLine};
+pub use format::format_schema;
+pub use infer::infer_schema;

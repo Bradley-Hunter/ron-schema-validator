@@ -4,7 +4,7 @@ Schema validation for [RON (Rusty Object Notation)](https://github.com/ron-rs/ro
 
 RON has no equivalent of JSON Schema. This project fills that gap.
 
-> **Status:** v0.10 — Schema parser, RON parser, validator, and CLI are all functional with test coverage. JSON output, default field values, warnings, schema imports, and custom validation annotations available.
+> **Status:** v1.0 — Feature-complete. Schema parser, RON parser, validator, and CLI with schema inference, JSON output, default field values, warnings, schema imports, and custom validation annotations.
 
 ## Schema Format
 
@@ -217,6 +217,22 @@ Use `--deny-warnings` to treat warnings as errors (exit code 1):
 ron-schema validate --schema config.ronschema data/ --deny-warnings
 ```
 
+### Schema Inference
+
+Generate a schema from an example `.ron` file:
+
+```
+ron-schema init example.ron
+```
+
+Write the inferred schema to a file:
+
+```
+ron-schema init example.ron --output example.ronschema
+```
+
+The inferred schema is a starting point — review and refine it to match your requirements.
+
 ## Library Usage
 
 The library crate (`ron-schema`) operates on `&str` — no file I/O, no formatting opinions.
@@ -236,18 +252,31 @@ for error in &result.errors {
 
 Validation collects all errors rather than failing on the first — useful when batch-validating many files.
 
+### Schema Inference
+
+```rust
+use ron_schema::{parse_ron, infer_schema, format_schema};
+
+let value = parse_ron(ron_source)?;
+let schema = infer_schema(&value);
+let schema_text = format_schema(&schema);
+```
+
 ## Project Structure
 
 ```
 ron-schema-validator/
-├── ron-schema/          ← library crate (zero external dependencies)
+├── ron-schema/          ← library crate (zero default dependencies, optional `regex` feature)
 │   └── src/
 │       ├── lib.rs       ← public API re-exports
 │       ├── span.rs      ← Position, Span, Spanned<T>
 │       ├── error.rs     ← error types (schema, RON, validation)
 │       ├── diagnostic.rs
 │       ├── schema/      ← schema AST + parser
-│       └── ron/         ← RON value types + parser
+│       ├── ron/         ← RON value types + parser
+│       ├── format.rs    ← schema-to-text formatter
+│       ├── infer.rs     ← schema inference from RON data
+│       └── resolve.rs   ← import resolution
 └── ron-schema-cli/      ← binary crate (clap)
     └── src/
         └── main.rs
@@ -338,8 +367,12 @@ Requires Rust 2021 edition.
 - [x] `@require(field op field)` for cross-field constraints
 - [x] Parse-time validation of annotation arguments
 
-### Future
-- [ ] `init` subcommand (schema inference)
+### v1.0 — Schema Inference & Documentation
+
+- [x] `ron-schema init` subcommand to infer schemas from example data
+- [x] `format_schema()` library function for schema-to-text conversion
+- [x] `infer_schema()` library function for RON-to-schema inference
+- [x] Documentation polish
 
 ## Design Decisions
 

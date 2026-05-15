@@ -5,6 +5,7 @@ use std::fs;
 use std::process;
 use ron_schema::{
     parse_schema, parse_ron, validate, extract_source_line, resolve_imports,
+    format_schema, infer_schema,
     SchemaResolver, ValidationError, ErrorKind, Warning, WarningKind,
 };
 
@@ -355,6 +356,15 @@ enum Commands {
         #[arg(long)]
         deny_warnings: bool,
     },
+    /// Infer a schema from an example RON file
+    Init {
+        /// Path to an example .ron file
+        example: PathBuf,
+
+        /// Write the inferred schema to a file instead of stdout
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 /// Validates a single .ron file against a parsed schema.
@@ -578,6 +588,43 @@ fn main() {
             match format {
                 OutputFormat::Human => run_human(&parsed_schema, &target, deny_warnings),
                 OutputFormat::Json => run_json(&parsed_schema, &target, deny_warnings),
+            }
+        }
+        Commands::Init { example, output } => {
+            let source = match fs::read_to_string(&example) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: could not read {}: {e}", example.display());
+                    process::exit(2);
+                }
+            };
+
+            let ron_value = match parse_ron(&source) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "error[parse] at {}:{}:{}\n    {:?}",
+                        example.display(),
+                        e.span.start.line,
+                        e.span.start.column,
+                        e.kind,
+                    );
+                    process::exit(2);
+                }
+            };
+
+            let schema = infer_schema(&ron_value);
+            let formatted = format_schema(&schema);
+
+            match output {
+                Some(path) => {
+                    if let Err(e) = fs::write(&path, &formatted) {
+                        eprintln!("error: could not write {}: {e}", path.display());
+                        process::exit(2);
+                    }
+                    eprintln!("Wrote inferred schema to {}", path.display());
+                }
+                None => print!("{formatted}"),
             }
         }
     }

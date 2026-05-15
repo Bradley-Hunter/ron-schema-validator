@@ -383,14 +383,14 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "ron-schema"
-version = "0.10.0"
+version = "1.0.0"
 dependencies = [
  "regex",
 ]
 
 [[package]]
 name = "ron-schema-cli"
-version = "0.10.0"
+version = "1.0.0"
 dependencies = [
  "assert_cmd",
  "clap",

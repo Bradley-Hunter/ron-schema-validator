@@ -696,3 +696,95 @@ fn import_missing_file_json_has_error_message() {
     let json = parse_json(&output.stdout);
     assert!(json["error"].as_str().unwrap().contains("nonexistent.ronschema"));
 }
+
+// ─── Init subcommand ───
+
+#[test]
+fn init_exits_with_zero() {
+    cmd()
+        .args(["init", "tests/fixtures/valid.ron"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn init_outputs_schema_to_stdout() {
+    let output = cmd()
+        .args(["init", "tests/fixtures/valid.ron"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("name: String,"));
+    assert!(stdout.contains("count: Integer,"));
+    assert!(stdout.contains("weight: Float,"));
+    assert!(stdout.contains("active: Bool,"));
+}
+
+#[test]
+fn init_infers_option_type() {
+    let output = cmd()
+        .args(["init", "tests/fixtures/valid.ron"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Option(String)"));
+}
+
+#[test]
+fn init_infers_list_type() {
+    let output = cmd()
+        .args(["init", "tests/fixtures/valid.ron"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("tags: [String],"));
+}
+
+#[test]
+fn init_infers_enum() {
+    let output = cmd()
+        .args(["init", "tests/fixtures/valid.ron"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("category: Category,"));
+    assert!(stdout.contains("enum Category"));
+}
+
+#[test]
+fn init_output_to_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let output_path = dir.path().join("inferred.ronschema");
+    cmd()
+        .args(["init", "tests/fixtures/valid.ron", "--output", output_path.to_str().unwrap()])
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(&output_path).unwrap();
+    assert!(content.contains("name: String,"));
+}
+
+#[test]
+fn init_missing_file_exits_with_two() {
+    cmd()
+        .args(["init", "tests/fixtures/nonexistent.ron"])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn init_parse_error_exits_with_two() {
+    cmd()
+        .args(["init", "tests/fixtures/parse-error.ron"])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn init_output_parses_as_valid_schema() {
+    let output = cmd()
+        .args(["init", "tests/fixtures/valid.ron"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    ron_schema::parse_schema(&stdout).expect("inferred schema should parse");
+}
